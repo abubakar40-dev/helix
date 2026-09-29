@@ -217,6 +217,11 @@ STT_DIR = os.path.expanduser("~/.local/share/helix-stt")
 WHISPER = os.path.join(STT_DIR, "whisper-cli")
 WHISPER_MODEL = os.path.join(STT_DIR, "models", "ggml-base.bin")
 MAX_AUDIO = 12 * 1024 * 1024  # ~12MB, roughly 3 minutes of opus
+# 2 threads, not nproc. Measured on this 4-core box while the desktop app is running
+# (load ~9): -t4 = 100s for 30s of audio, -t3 = 28s, -t2 = 21.5s, -t1 = 34s.
+# Oversubscribing the cores makes it ~5x SLOWER. ponytail: revisit only if the box
+# stops being busy, and re-measure before assuming.
+STT_THREADS = "2"
 
 
 def stt(audio: bytes, lang: str = ""):
@@ -248,7 +253,7 @@ def stt(audio: bytes, lang: str = ""):
         if p.returncode != 0 or not os.path.isfile(wav):
             return {"ok": False, "error": "ffmpeg: " + p.stderr.decode()[:160]}
 
-        cmd = [WHISPER, "-m", WHISPER_MODEL, "-nt", "-f", wav]
+        cmd = [WHISPER, "-m", WHISPER_MODEL, "-nt", "-t", STT_THREADS, "-f", wav]
         if lang:
             cmd[1:1] = ["-l", lang]
         t0 = time.time()
@@ -344,7 +349,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("X-Helix-Voice") != "1":
             return self._send_json({"ok": False, "error": "missing X-Helix-Voice header"}, 403)
         n = int(self.headers.get("Content-Length") or 0)
-        if n > 64_000:
+        is_stt = self.path.split("?", 1)[0] == "/stt"
+        # Different caps: a JSON note is tiny, audio is not. A single 64KB cap on
+        # both capped /stt at ~2 seconds of audio, which looked like "STT broken".
+        limit = MAX_AUDIO if is_stt else 64_000
+        if n > limit:
             return self._send_json({"ok": False, "error": "body too large"}, 413)
         lang = ""
         if "?" in self.path:
@@ -352,9 +361,7 @@ class Handler(BaseHTTPRequestHandler):
             lang = (q.get("lang") or [""])[0]
         body = self.rfile.read(n) if n else b""
         try:
-            if self.path.split("?", 1)[0] == "/stt":
-                if n > MAX_AUDIO:
-                    return self._send_json({"ok": False, "error": "audio too large"}, 413)
+            if is_stt:
                 return self._send_json(stt(body, lang))
             try:
                 payload = json.loads(body or b"{}")

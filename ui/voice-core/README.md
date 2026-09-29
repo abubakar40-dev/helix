@@ -92,10 +92,25 @@ Measured on this box: **1.64x realtime, 295 MB RSS.** `ggml-tiny` was tried and
 "Islamabad!"). `base` gets it right.
 
 ### Latency — read this before optimising
-Expect **~5s per command**. whisper pads every input to a 30-second encoder window, so
-there is a **~4.4s fixed cost per request** regardless of clip length, plus ~0.26s per
-second of audio. `whisper-server` was tried and **rejected**: it only skips the model
-load (~0.5s) while holding ~300 MB resident permanently. Measured both ways before
-discarding it.
+**There is no limit on how long you can talk.** Measured through the real endpoint:
 
-If ~5s is too slow, the lever is a different model, not a resident server.
+| clip | wall |
+|---|---|
+| 1 s | 7.5 s |
+| 3 s | 6.9 s |
+| 10 s | 7.0 s |
+| 30 s | 22.0 s |
+
+About a 6.5 s fixed cost plus ~0.5 s per extra second. A 3–5 s command returns in
+~7 s. Two things that look wrong but are not:
+
+- **Threads are pinned to 2, not 4.** This is a 4-core box sitting at load ~9. Measured
+  on the same 30 s clip: `-t4` = 100 s, `-t3` = 28 s, **`-t2` = 21.5 s**, `-t1` = 34 s.
+  Oversubscribing makes it ~5x slower. The numbers are in a comment at
+  `STT_THREADS` in `bridge/server.py` so nobody "fixes" it back.
+- **Per-invocation `whisper-cli` is deliberate.** `whisper-server` keeps the model
+  resident, but whisper pads every input to a 30-second encoder window, so the ~6.5 s
+  fixed cost happens either way. The server only skips the model load (~0.5 s) while
+  holding ~300 MB resident permanently. Measured both ways before discarding it.
+
+If ~7 s is too slow, the lever is a different model — not a resident server.

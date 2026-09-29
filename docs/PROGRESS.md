@@ -825,3 +825,45 @@ work and shipping the privacy leak silently was the alternative. Flagged, not hi
 Also noted: no wake word yet (§9 lists it), no Urdu/mixed support beyond whatever
 `recog.lang` is set to — the SOUL/spec call for English/Urdu/mixed and the browser
 default will not cover that. Both are honest gaps in this version.
+
+### Two real bugs found by asking "can it take more than 5s?"
+
+Measuring the latency curve instead of restating a summary turned up two things the
+earlier smoke tests had missed:
+
+**1. `/stt` was capped at ~2 seconds of audio.** The 64 KB body limit meant for the
+JSON `/say` payload was also being applied to audio. At 16 kHz mono that is ~32 KB per
+second, so any clip over 2 s returned `{"ok": false, "error": "body too large"}`. The
+first browser test happened to use a 48 KB clip and passed, so this stayed invisible
+until a 3 s clip was tried. Audio and JSON now have separate caps (12 MB / 64 KB).
+
+**2. Thread oversubscription was making it ~5x slower.** whisper defaults to one
+thread per core; this is 4 cores and the load average sits around **9** because of the
+desktop app. Same 30 s clip throughout:
+
+| `-t` | time | rate |
+|---|---|---|
+| 4 (the default) | 100 s | 0.30x realtime |
+| 3 | 28 s | 1.07x |
+| **2** | **21.5 s** | **1.40x** |
+| 1 | 34 s | 0.87x |
+
+`-t 2` is baked into the bridge with the numbers in a comment, because it looks like a
+mistake otherwise and someone will "fix" it back to `-t 4`.
+
+### Actual behaviour, measured through the real endpoint
+There is **no cap on how long you can talk.** Latency scales with clip length:
+
+| clip | wall |
+|---|---|
+| 1 s (Urdu) | 7.5 s |
+| 3 s | 6.9 s |
+| 10 s | 7.0 s |
+| 30 s | 22.0 s |
+
+Roughly a ~6.5 s fixed cost plus ~0.5 s per extra second. A normal 3–5 s voice command
+returns in **about 7 seconds** — usable, not instant. That is the honest number, and it
+was only knowable by measuring on the real box under real load.
+
+Re-verified after both fixes: Urdu auto-detect `"Islamabad!"`, Urdu forced-to-`ur`
+gives Urdu script, English 3 s clip transcribes correctly.

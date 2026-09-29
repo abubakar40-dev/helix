@@ -1,0 +1,833 @@
+# HELIX — Master Development Specification & Roadmap
+(formerly "Jarvis" — renamed. Old Jarvis is archived at ~/jarvis-old-archive,
+kept only for reference; it is not being patched, it is being replaced.)
+
+---
+
+## 1. Project Vision
+
+HELIX is intended to become a **multi-agent personal AI operating assistant**
+capable of controlling the PC, performing online research, creating and
+managing files, automating applications, understanding voice and visual
+input, and executing long-running tasks with minimal user intervention.
+
+The core design principle is:
+
+> **HELIX is the CEO/orchestrator — not the worker that does everything itself.**
+
+HELIX should delegate specialized tasks to dedicated agents, monitor their
+progress, verify their results, and report back to the user. Sub-agents are
+not fake status lines — each one is a real, independent agent with its own
+memory and personality, and HELIX should be able to say "I've assigned this
+to the Research agent, it's working on it now," not just simulate that.
+
+The system should prioritize:
+
+* Efficiency
+* Minimal code
+* Minimal dependencies
+* Local execution for PC control and file operations
+* Free tools and free-tier models only — no paid subscriptions or paid API
+  usage anywhere in the stack; if a needed capability is only offered as
+  paid, look for a free/open-source GitHub alternative before considering
+  a paid option at all
+* Modular architecture
+* Safe automation
+* Clear agent responsibilities
+* Reusable tools — prefer wiring up an existing open-source tool/skill over
+  writing new code for the same capability
+* Verification and rollback
+* Long-running task support
+* Low resource consumption
+* No unnecessary code or abstraction
+
+---
+
+## 2. Environment & Hardware Constraints
+
+These are fixed facts about the machine HELIX runs on, and they shape several
+decisions below.
+
+* Host: this laptop, running **Ubuntu 26.04.1 LTS**. Not a cloud server —
+  PC-control features (opening apps, terminal, screenshots, file control)
+  require the physical machine, so cloud hosting was ruled out.
+* **No GPU.** CPU-only.
+* **6.9 GB total RAM**, often only ~1 GB free day-to-day. This is tight.
+* ~70 GB free disk space — not a constraint.
+* Laptop is only on/available when actively in use, not 24/7. Channels that
+  need always-on availability (e.g. receiving WhatsApp messages while the
+  laptop is off) are a later concern, not solved by this spec.
+
+### What this rules out / changes
+
+* **Local LLM inference is a fallback, not the primary path.** A CPU-only
+  machine with under 7 GB RAM cannot reliably run a capable local model
+  alongside everything else HELIX needs to do. (This reverses the original
+  "local-first for everything" instinct — see §5.)
+* **Local image/video generation is impractical as a primary path.** A
+  Stable-Diffusion-class model on this CPU would take minutes per image and
+  risks running out of memory. Treat local generation as an offline/low-res
+  fallback only (see §14).
+* If a local fallback model is ever configured, prefer a small quantized
+  model (e.g. Qwen2.5 7B or Llama 3.1 8B, 4-bit) over a tiny sub-1B model —
+  models that small are too weak to be useful even for simple routing.
+
+---
+
+## 3. Engineering Philosophy
+
+### 3.1 Minimalist Code
+
+HELIX must be implemented with **the smallest practical amount of code**.
+
+If a feature can be implemented cleanly in 10 lines, do not write 30. Avoid:
+
+* Redundant wrapper functions
+* Unnecessary classes
+* Duplicate logic
+* Over-engineered abstractions
+* Unused dependencies
+* Repeated configuration
+* Boilerplate that provides no functional value
+
+> **Do not add code because it looks architecturally impressive. Add code
+> only when it provides real functionality, reliability, safety, or
+> maintainability.**
+
+In OpenCode, enforce this with the **`ponytail`** plugin
+(`DietrichGebert/ponytail` — "lazy, not negligent": keeps code minimal
+without skipping error handling or security).
+
+### 3.2 Reuse Before Building
+
+Before writing custom code for a capability, check whether:
+
+1. Hermes Agent already has a built-in tool or bundled skill for it (it
+   ships with 50+ skills out of the box — search there first).
+2. A free, open-source GitHub project already does it well, and can be
+   wired in via MCP, a CLI call, or a small adapter.
+
+Only build custom code for the genuinely project-specific glue (e.g. the
+UI-to-agent bridge in §16) that nothing off-the-shelf covers.
+
+---
+
+## 4. Core Technology Stack (decisions already made)
+
+This is the concrete stack HELIX is being built on — not a menu of options,
+a record of what was chosen and why.
+
+* **Agent runtime / "brain": Hermes Agent** (NousResearch/hermes-agent, free,
+  open-source). Installed at `~/.hermes`, running as a systemd user service
+  (`hermes-gateway`) so it survives logout. Do not build a competing agent
+  runtime — build UI and glue code around this one.
+* **Sub-agents = Hermes profiles.** Each sub-agent (Research, PC Control,
+  Development, Vision, Communication, etc.) is a separate Hermes **profile**
+  — its own config, `.env`, `SOUL.md` persona file, memory, and trimmed tool
+  list — not a lightweight preset. Profile ids are lowercase/alphanumeric
+  role names (`research`, `pc`, `dev`, ...); character names for the Agent
+  Town UI (§16) are a display-layer concern only.
+* **Coding work: OpenCode**, driven either directly or via Hermes's built-in
+  `opencode` skill. Do not reimplement code-execution/dev tooling — use
+  OpenCode for it.
+* **Model provider: OpenRouter** (API key already configured). Model
+  selection policy and priority list are in §6.
+* **Providers deliberately NOT used:**
+  - **Groq** — not a Hermes-supported provider (checked directly in Hermes's
+    provider list; not available).
+  - **NVIDIA NIM / build.nvidia.com** — blocks API signups from Pakistan.
+  - Any paid tier of any provider, per the free-only rule in §1.
+* **Task board: Hermes Kanban** for durable, crash-resistant task
+  delegation from HELIX (CEO) to sub-agents (see §8 for the current known
+  bug and workaround).
+* **Search: Tavily** (free tier), configured as the web-search backend on
+  the research profile.
+
+---
+
+## 5. Local vs. Cloud — Where Each Applies
+
+Two different "local vs. cloud" decisions exist in this project and they are
+**not the same decision** — keep them separate:
+
+### 5.1 PC control, files, and system tasks → stay local (unchanged from
+original plan)
+
+These should run locally regardless of internet access:
+
+* PC control, file management, folder navigation, terminal commands
+* Window management, keyboard/mouse automation, clipboard, screenshots
+* OCR, screen analysis
+* Local document processing, PDF processing, document editing
+* System monitoring, application control
+* Local memory storage
+* Task management, local workflows
+
+```text
+User
+  ↓
+HELIX
+  ↓
+Can this task be completed locally?
+  ├── YES → Execute locally
+  └── NO  → Delegate to an online agent/service
+```
+
+HELIX should not unnecessarily send local, mechanical tasks to a cloud AI
+API just to decide what to do.
+
+### 5.2 The model doing the "thinking" → online-first, local fallback
+(revised from the original "local-first" plan)
+
+Given the hardware in §2, HELIX's actual reasoning/chat model runs on free
+cloud models by default, with a local model (via Ollama) only as a fallback
+if it's ever needed for offline use — not the primary path. See §11 for the
+model priority list.
+
+### 5.3 Privacy note on Gemini
+
+Minimize data sent to Google/Gemini specifically — avoid routing anything
+sensitive through it. This is a standing constraint on any future use of
+Gemini (e.g. Gemini Live for voice), not just the model-choice decision.
+
+---
+
+## 6. HELIX Multi-Agent Architecture
+
+HELIX acts as the **CEO / Chief Orchestrator**. It should not perform every
+task itself. Instead, it maintains a collection of specialized agents
+(Hermes profiles, per §4).
+
+### 6.1 HELIX — CEO / Orchestrator
+
+Responsibilities:
+
+* Understand the user's request
+* Break complex requests into subtasks
+* Select appropriate agents and assign tasks (via Kanban, see §8)
+* Pass information between agents
+* Monitor progress, handle failures, verify results
+* Request confirmation when required
+* Report progress to the user, combine final results
+* Maintain task history; stop/cancel tasks when requested
+
+Example:
+
+```text
+User:
+"Research Forex Trading and create a PDF on my Desktop."
+
+                ↓
+
+             HELIX
+                ↓
+       ┌────────┴────────┐
+       ↓                 ↓
+Research Agent     File Agent
+       ↓                 ↓
+Online research    Create PDF
+       ↓                 ↓
+       └──────→ HELIX ←─┘
+                    ↓
+              Verify result
+                    ↓
+             Report to user
+```
+
+The CEO profile should primarily delegate, not execute — once delegation is
+reliable, trim its own tool list the same way sub-agent tool lists are
+trimmed.
+
+---
+
+## 7. Specialized Agents
+
+The exact agent count should remain flexible. Agents should exist because
+they provide a useful separation of responsibility, not simply to increase
+complexity.
+
+### 7.1 Research Agent — status: built, first version working
+
+Primarily online. Responsibilities: web research, Tavily search, source
+collection, information extraction, fact gathering, research synthesis,
+downloading relevant resources, finding images, collecting references,
+producing structured research output. Returns structured information to
+HELIX rather than directly controlling the PC.
+
+Rules for this agent specifically:
+
+* Always cite sources, and print source URLs as **plain text**, not
+  markdown hyperlinks (so they're copy-pasteable in the terminal UI).
+* If sources conflict or evidence is thin, say so plainly rather than
+  smoothing it over.
+* Prefer primary sources over blogs/aggregators.
+* Ask one clarifying question if a request is ambiguous, rather than
+  guessing.
+* Report format: answer → key findings with sources → confidence level →
+  what couldn't be verified.
+
+### 7.2 File / Document Agent
+
+Primarily offline. Create/edit TXT, Markdown, DOCX, PDF, PowerPoint; insert
+downloaded images; organize files; save to arbitrary permitted paths; read,
+explain, and convert documents.
+
+### 7.3 PC Control Agent — highest priority to build next
+
+Primarily offline/local. Open/close/minimize/maximize/restore applications,
+window management, mouse/keyboard automation, screenshots, clipboard, file
+operations, Recycle Bin management, system settings, terminal operations.
+
+**This is the direct fix for the original Jarvis complaint** (files claimed
+to exist that didn't, multi-file creation crashing). Its `SOUL.md` must
+require explicit confirmation before destructive actions, and it must
+verify results rather than assuming success (see §19).
+
+### 7.4 Vision Agent
+
+Screen reading, OCR, visual understanding, screenshot analysis, UI element
+detection, reading text from applications, assisting GUI automation. Later:
+on-device screen/audio memory via `screenpipe/screenpipe` (free,
+local-first, MCP-connectable) — see §17.
+
+### 7.5 Development Agent
+
+Drives OpenCode for: Python development, Git, debugging, code analysis,
+database work, project organization, testing, optimization, dependency
+analysis, error diagnosis.
+
+### 7.6 Career Agent
+
+Job searching, filtering, CV optimization, cover letters, interview prep,
+career research, application assistance.
+
+### 7.7 Communication Agent
+
+Email (read/send/reply/forward/labels/priority), WhatsApp integration
+(including voice-message transcription). See §17 for the specific free
+skills that cover this (`42-evey/hermes-plugins`).
+
+### 7.8 System Monitoring Agent
+
+CPU/RAM/disk/network monitoring, hardware/software info, system health,
+laptop optimization, startup diagnostics.
+
+---
+
+## 8. Task Management — Hermes Kanban
+
+HELIX uses Hermes's built-in Kanban board (a durable, SQLite-backed task
+board) for CEO → sub-agent delegation, instead of a custom task-queue
+implementation. Tasks are claimed atomically, can depend on each other, and
+are executed by a named profile in an isolated workspace — so a crashed
+worker doesn't lose the task, and a human can comment/unblock mid-task.
+
+Must support (provided by Kanban, not custom code):
+
+* Multiple simultaneous tasks, background tasks, long-running tasks
+* Task queues, priorities, cancellation, retry
+* Task status, progress tracking, task history
+
+The user should be able to ask "HELIX, what's the progress?" and get an
+answer from actual Kanban task state, not a guess.
+
+### ⚠ Known upstream bug (as of Hermes v0.21.5)
+
+The Kanban dispatcher currently **crashes when spawning workers for named
+profiles** (only the `default` profile's kanban workers run correctly).
+Error: `ModuleNotFoundError: No module named 'hermes_cli'`. Matches
+NousResearch/hermes-agent issue #36981.
+
+* First step: `hermes update`, then retest a named-profile kanban task.
+* If still broken: use the in-process `delegate_task` tool as a workaround
+  for CEO → sub-agent handoff (no subprocess spawn, unaffected by this
+  bug). It's less durable than Kanban (no crash-resume), but functional.
+  Revisit Kanban once upstream fixes this — note the bug link in
+  `docs/PROGRESS.md` so it's easy to check later.
+
+---
+
+## 9. Voice System
+
+Required capabilities:
+
+* Voice activation, wake word, speech-to-text, text-to-speech
+* English, Urdu, and mixed English/Urdu commands
+* Natural-language commands, voice responses
+* **Interrupt / barge-in: the ability to stop HELIX mid-sentence and give a
+  new command.** The old Jarvis could not be interrupted while speaking —
+  it had to be closed and restarted. This is a required feature, not
+  optional.
+
+Preferred architecture — evaluate these free options before building
+anything custom:
+
+* `bielcarpi/hermes-live-voice` — continuous, **interruptible** voice,
+  directly solves the barge-in requirement above.
+* `drakulavich/kesha-voice-kit` — local-first STT (25 languages) and TTS,
+  no API keys required — reduces cloud dependency and matches the privacy
+  goal in §5.3.
+* Gemini Live API as a possible STT/TTS option, but keep in mind the data
+  sent to it should stay minimal (§5.3).
+* Investigate Vosk for local/offline speech recognition as a further
+  fallback if the above don't fully cover offline use.
+
+```text
+Microphone → Wake Word → STT → HELIX → Agent/Tool → Action → TTS → Voice Response
+                                  ↑
+                    (interruptible at any point while speaking)
+```
+
+---
+
+## 10. Local AI (fallback model)
+
+If/when a local fallback model is configured (see §5.2), prefer a small
+**quantized** model over a tiny one — e.g. `qwen2.5:3b-instruct-q4_K_M` via
+Ollama fits comfortably in this machine's RAM. Do not default to a sub-1B
+model; models that small are too weak to be useful even for routing.
+
+The local model, when used, should primarily handle:
+
+* PC commands, file operations, system interaction
+* Local reasoning, task classification, agent routing
+* Local document analysis, offline assistance
+
+Cloud AI should not be required for ordinary PC operations even when a
+local fallback model isn't configured — those operations are tool calls
+(§5.1), not model reasoning.
+
+---
+
+## 11. Online AI — Model Priority
+
+Online is the **primary** path for HELIX's reasoning (see §5.2). Model
+availability on OpenRouter's free tier changes often — re-verify before
+relying on any of these long-term.
+
+| Priority | Model | Notes |
+|---|---|---|
+| 1 | `stealth/space-bunny-alpha` | Best current option for coding/agentic work: 1M context, fast, built for coding. **Risk:** anonymous stealth-preview model, can disappear or go paid without notice — don't treat as guaranteed. |
+| 2 | `nvidia/nemotron-3-ultra:free` | Solid reasoning fallback. |
+| 3 | `openrouter/free` | OpenRouter's own auto-router — always resolves to *something* free with tool-calling support; safest default. |
+| 4 | Small fast free models (`*-flash:free`, `*-lightning:free` variants) | Fine for lightweight/routing sub-agents, not for coding. |
+
+Set per-profile: `hermes config set model.default "<model>"` for the CEO
+profile, `hermes -p <profile> config set model.default "<model>"` for a
+sub-agent — this also allows running different profiles on different
+models simultaneously. Configure automatic failover across this list with
+`hermes fallback` (check `hermes fallback --help` for exact syntax rather
+than guessing it).
+
+> **Cloud access should be an extension of HELIX, not the foundation of
+> HELIX's control over the PC.** Online is the default for the *thinking*
+> model; PC control and file operations stay local regardless (§5.1).
+
+---
+
+## 12. Computer Control
+
+Applications: open, close, minimize, maximize, restore, switch, focus,
+launch, detect installed applications.
+
+Input: mouse, keyboard, clipboard, automated clicking, typing, hotkeys,
+dragging, scrolling.
+
+Terminal: bash (this machine is Ubuntu — CMD/PowerShell/WSL only relevant
+if HELIX is ever ported to Windows). HELIX should be able to run commands,
+read output, detect errors, retry, chain commands, and verify results
+rather than assuming a command worked.
+
+---
+
+## 13. Filesystem, Documents & Browser
+
+### Filesystem
+
+Browse, search, create, rename, move, copy, delete, restore files;
+organize/analyze directories; find duplicates; batch-process files; work
+with arbitrary user-selected paths (e.g. "save the PDF in
+~/Documents/Research/Forex").
+
+### Document Intelligence
+
+Read, summarize, explain, extract from, edit, optimize, reformat, and
+convert documents; create documents and presentations; add images; organize
+references.
+
+### Browser Automation
+
+Local headless Chromium (Hermes's default, free, no API key). Open
+websites, search, navigate, extract information, fill forms, click, upload,
+manage browser workflows. **Do not use anti-detection/bot-evasion browsers**
+(e.g. Camofox) — circumventing site bot-protection is out of scope for this
+project.
+
+### Web → File Pipeline
+
+```text
+Web Research → Collect Info → Download Images → Analyze → Generate Content
+  → Create PDF/PPT/DOCX → Optimize Formatting → Save to Requested Location
+```
+
+---
+
+## 14. Image & Video Generation
+
+Given no GPU (§2), this is **cloud-first**, with local generation as a
+fallback only:
+
+* **Primary:** `jau123/MeiGen-AI-Design-MCP` — MCP server covering multiple
+  free/cloud models for both images (GPT Image 2, Seedream, Flux 2) and
+  video (Veo 3.1, Seedance 2.0), via BYOK or free-tier access. No GPU
+  required.
+* **Fallback (offline / low-res only):** the existing local Easy Diffusion
+  install, wired in via `weftspun/easy-diffusion-mcp` (exposes a
+  `generate_image` tool that proxies to Easy Diffusion's local `/render`
+  API). Expect minutes per image on this CPU — not for routine use.
+
+---
+
+## 15. Universal Link Downloader
+
+Paste a link into the HELIX UI (images, video, audio, or documents) and
+have it download automatically — via `yt-dlp` for video/audio, with an
+equivalent fallback for plain files/images/documents.
+
+---
+
+## 16. GUI — Three Core Panels
+
+HELIX's interface is inspired by the *concept* of a reference app the user
+showed screenshots of (internally referred to as "Stonic AI" during
+planning) — **build an original implementation; do not copy its name,
+logo, or branding.** Wire all three panels to genuinely live Hermes/Kanban
+data, not mocked data.
+
+### 16.1 Agent Town
+
+Pixel-art, top-down office. Each sub-agent profile has a desk and a live
+status (idle / working / blocked), sourced from Hermes/Kanban state via the
+bridge server (§16.4). Character names (e.g. Alice/Bob/Carol/Dave-style) map
+to profile ids for display only — profile ids themselves stay lowercase
+role names (`research`, `pc`, ...).
+
+### 16.2 Voice Core
+
+A circular "thinking" node graph — Memory / Skills / Soul / Settings
+branches feeding into a central orb — with a Start/Stop control, wired to
+the interruptible voice system from §9. Reuse the existing Three.js orb
+work already done for the old Jarvis dashboard rather than rebuilding it.
+
+### 16.3 World Monitor
+
+3D globe + 2D map + live headlines feed. Wire in the already-installed
+`bilawalsidhu/gods-eye-view` (free, open-source: live
+aircraft/ship/satellite/earthquake/public-cam globe) rather than building a
+new globe. Headlines feed: `currentslab/news-api-skills`.
+
+### 16.4 Bridge server
+
+The one piece of genuinely custom glue code this project needs: a small
+local server exposing live Hermes/Kanban state (profile status, current
+tasks, chat/voice events) to the three panels above, e.g. via WebSocket.
+Keep it minimal (§3.1). **Never bind it to `0.0.0.0` or any non-localhost
+interface** — Hermes's own dashboard plugin routes assume no external
+exposure.
+
+### General visual states (all panels should reflect these where relevant)
+
+```text
+IDLE · LISTENING · THINKING · WORKING · WAITING · SUCCESS · WARNING · ERROR · OFFLINE · ONLINE
+```
+
+---
+
+## 17. Free Skills & Tools Shortlist
+
+Curated from the Hermes ecosystem (`0xNyk/awesome-hermes-agent`) and
+targeted searches — install when the matching feature is actually being
+built, not all at once ("just in case" installs conflict with the
+minimal-code principle in §3):
+
+| Need | Tool | Status |
+|---|---|---|
+| Memory layer | `elkimek/honcho-self-hosted` | Not yet installed |
+| On-device screen/audio memory (Vision agent) | `screenpipe/screenpipe` | Not yet installed |
+| Local STT/TTS, no API key | `drakulavich/kesha-voice-kit` | Not yet installed |
+| Interruptible voice (barge-in) | `bielcarpi/hermes-live-voice` | Not yet installed |
+| WhatsApp / Discord / inter-agent bridging | `42-evey/hermes-plugins` | Not yet installed |
+| Multi-provider web search | `robbyczgw-cla/hermes-web-search-plus` | Have Tavily directly instead — revisit only if Tavily proves insufficient |
+| YouTube search/transcripts | `ZeroPointRepo/youtube-skills` | Not yet installed |
+| Live news feed (World Monitor) | `currentslab/news-api-skills` | Not yet installed |
+| Local image generation | `weftspun/easy-diffusion-mcp` | Not yet installed |
+| Cloud image/video generation | `jau123/MeiGen-AI-Design-MCP` | Not yet installed |
+| Minimal-code enforcement in OpenCode | `DietrichGebert/ponytail` | Not yet installed |
+
+---
+
+## 18. Project Folder Structure
+
+```text
+~/helix/
+├── agents/        # notes per sub-agent (maps to Hermes profiles, §6-7)
+├── skills/        # only CUSTOM skills not already bundled in Hermes
+├── ui/
+│   ├── agent-town/    # §16.1
+│   ├── voice-core/    # §16.2
+│   └── world-monitor/ # §16.3
+├── bridge/        # §16.4
+├── config/        # config templates, .env.example — NEVER real secrets
+└── docs/          # this file, PROGRESS.md, research notes
+```
+
+Hermes Agent itself lives at `~/.hermes` and is not duplicated inside
+`~/helix` — `~/helix` holds only what's specific to this project.
+
+---
+
+## 19. Security & Safety
+
+Because HELIX will eventually have extensive PC control, security cannot be
+an afterthought.
+
+Required: permission levels, a confirmation system, credential protection,
+secure storage, audit logs, prompt-injection defense, tool restrictions,
+per-agent permissions, verification, rollback, a kill switch, safe mode.
+
+High-risk operations require confirmation:
+
+* Permanent deletion
+* Destructive terminal commands
+* System configuration changes
+* Credential-related operations
+* Bulk modifications
+
+**Explicitly out of scope, and will not be built:** bypassing CAPTCHA
+verification, or running actions "out of sandbox" in a way that
+circumvents platform anti-abuse protections. This was in an earlier draft
+of this spec and has been removed — it's not something this project will
+implement, regardless of framing. The confirmation-before-destructive-action
+requirement above stays and is the actual safety feature this project
+needs.
+
+---
+
+## 20. Verification & Error Recovery
+
+HELIX should not blindly assume that an action succeeded.
+
+```text
+HELIX: "Create report.pdf"
+        ↓
+Document Agent creates file
+        ↓
+Verification: Does file exist? Is it readable? Is size > 0? Is it valid?
+        ↓
+YES → Success        NO → Retry / Error
+```
+
+Same principle for: file operations, terminal commands, browser automation,
+downloads, document generation, and every agent task. This is the direct
+fix for old Jarvis's core failure (claiming files existed when they
+didn't) — it is a hard requirement, not a nice-to-have.
+
+---
+
+## 21. Gesture Control (in progress, separate track)
+
+Webcam-based: fingertip tracking for cursor control, closed fist →
+screenshot, double-tap → click, two fingers → screen grab/drag/move. Must
+stay lightweight — no excessive CPU/RAM use when idle.
+
+---
+
+## 22. Remote Control & Mobile (later phase)
+
+Mobile app / remote gateway: send text/voice commands, monitor tasks,
+receive notifications, request screenshots, transfer files, receive HELIX
+responses, transcribe WhatsApp voice messages. Communicates with a secure
+HELIX gateway rather than directly exposing the PC.
+
+---
+
+## 23. Historical Knowledge System — "Books of Eras" (later phase)
+
+A structured historical knowledge database (ancient/classical/medieval/
+modern history, science, philosophy, literature, technology, wars,
+economics, politics, religion, art, culture, major figures) — not just a
+folder of random books. Respect copyright/licensing when acquiring source
+material.
+
+---
+
+## 24. Current Status / Known Issues
+
+* Hermes Agent and OpenCode are installed and running; the `default`
+  profile is display-renamed to "helix" (CEO); the `research` profile is
+  built and passed a first test.
+* Model set to a free OpenRouter model (§11); free-model rate limits and
+  occasional deprecations are expected — the fallback chain (§11) exists to
+  handle this.
+* **Kanban named-profile bug** — see §8. Blocks reliable CEO → sub-agent
+  delegation via Kanban until resolved or worked around.
+* Minor: one npm vulnerability in Hermes's bundled browser-tools dependency
+  (upstream lockfile issue, not fixable locally, low priority).
+* The issues from the *old* Jarvis (dark mode bugs, browser command
+  failures, fullscreen issues, Google-AI dependency problems) are not being
+  patched — they're resolved by building fresh on Hermes/OpenCode instead.
+
+---
+
+## 25. Development Priorities
+
+### Phase 1 — Stabilize Core (current phase)
+
+Resolve the Kanban named-profile bug or confirm the `delegate_task`
+workaround; get CEO → Research delegation working end-to-end with a real
+test task before creating more sub-agent profiles.
+
+### Phase 2 — Local Control
+
+Build the `pc` profile next (highest-value — matches the original "Jarvis
+can't reliably handle files" complaint): filesystem, terminal,
+applications, windows, keyboard/mouse, clipboard, screenshots, system
+monitoring — with mandatory confirmation before destructive actions and
+mandatory result verification (§19, §20).
+
+### Phase 3 — Local AI (fallback only)
+
+Ollama + a small quantized model (§10), wired as a fallback, not primary.
+
+### Phase 4 — Voice
+
+`hermes-live-voice` for barge-in, `kesha-voice-kit` for local STT/TTS,
+English/Urdu/mixed-language commands.
+
+### Phase 5 — Remaining Agents
+
+Development, Vision, Communication, Career, System Monitoring agents —
+built the same way as Research/PC (clone profile, trim tools, write
+role-specific `SOUL.md`, smoke-test before wiring into delegation).
+
+### Phase 6 — UI
+
+Bridge server, then Agent Town, Voice Core, World Monitor (§16) — once
+there are at least 2-3 working sub-agents to actually visualize.
+
+### Phase 7 — Advanced Automation
+
+Long-running/background agents, multi-agent workflows, proactive
+notifications, advanced document pipelines, remote control.
+
+### Phase 8 — Mobile & Expansion
+
+Mobile app, remote gateway, Books of Eras, additional specialized agents.
+
+---
+
+## 26. Architecture Principles
+
+1. **Local where it belongs** — PC control and file operations stay local
+   regardless of connectivity (§5.1).
+2. **Online-first for reasoning** — the model doing the thinking defaults
+   to free cloud models, given the hardware constraints (§5.2).
+3. **Delegate** — HELIX orchestrates, sub-agents execute.
+4. **Minimal code** — simplest implementation that reliably solves the
+   problem (§3.1).
+5. **Reuse** — wire up existing free tools before writing new code (§3.2).
+6. **Free only** — no paid tools, subscriptions, or API usage anywhere in
+   the stack (§1).
+7. **Verify** — never assume an operation succeeded (§20).
+8. **Recover** — failures detected and handled automatically where
+   possible.
+9. **Modular** — agents and tools independently replaceable.
+10. **Secure** — greater capability requires greater permission control
+    (§19), and CAPTCHA-bypass / sandbox-escape are explicitly out of scope.
+11. **Observable** — HELIX should know what its agents are doing and why.
+12. **No feature bloat** — every feature must have a clear purpose.
+
+---
+
+## 27. Target Architecture
+
+```text
+                         ┌─────────────────────┐
+                         │        USER          │
+                         └──────────┬───────────┘
+                                    │
+                           Voice / Text / Remote
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │        HELIX          │
+                         │  CEO / Orchestrator   │
+                         │  (Hermes "default"    │
+                         │   profile)             │
+                         └──────────┬───────────┘
+                                    │
+                              Hermes Kanban
+                                    │
+          ┌──────────┬─────────────┼─────────────┬──────────┐
+          ▼          ▼             ▼              ▼          ▼
+       PC Agent   Research      Document        Vision      Dev
+      (profile)   (profile)     Agent           Agent      Agent
+          │          │             │              │          │
+          ▼          ▼             ▼              ▼          ▼
+       Local PC     Web         Files          Screen    OpenCode
+          │          │             │              │          │
+          └──────────┴─────────────┴──────────────┴──────────┘
+                                    │
+                                    ▼
+                              Verification
+                                    │
+                                    ▼
+                                 HELIX
+                                    │
+                                    ▼
+                            Agent Town / Voice Core /
+                            World Monitor (bridge server)
+                                    │
+                                    ▼
+                                  USER
+```
+
+---
+
+## 28. Ultimate Objective
+
+The final HELIX should behave less like a chatbot and more like an **AI
+operating layer for the computer**.
+
+The user should be able to give a high-level objective:
+
+> "HELIX, research Forex Trading, find reliable information, create a
+> professional PDF and PowerPoint with useful images, save both to my
+> Desktop, and tell me when they're ready."
+
+HELIX should automatically: understand the objective, create a task plan,
+assign research to the Research Agent, retrieve online information,
+download permitted resources, pass the research to the Document Agent,
+generate the requested files locally, insert and optimize relevant images,
+save to the requested location, verify the files exist and are valid,
+report completion, and keep the task history — re-verifying with the user
+before any destructive command or task. The user should not need to
+micromanage individual steps.
+
+---
+
+## 29. Development Standard
+
+Every future HELIX implementation decision should be evaluated against:
+
+1. **Does it actually improve HELIX?** If not, don't build it.
+2. **Can it run locally where it should (§5.1)?** If yes, prefer local
+   execution.
+3. **Can an existing free tool/skill handle it (§3.2, §17)?** If yes, reuse
+   it instead of creating duplicate functionality.
+4. **Is the implementation minimal (§3.1)?** If 10 clean lines solve the
+   problem, do not write 50.
+
+> **HELIX should become more capable without becoming unnecessarily
+> larger.** The goal is the smallest code base capable of delivering the
+> largest reliable set of free, working capabilities.

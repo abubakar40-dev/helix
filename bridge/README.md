@@ -25,6 +25,8 @@ To run it by hand instead (don't — the unit will fight you for port 8787):
 | `GET /` | the Agent Town page (served from `~/helix/ui/agent-town/`) |
 | `GET /state` | one JSON snapshot |
 | `GET /events` | SSE stream, pushes a snapshot whenever it changes (polls the DB every 1s) |
+| `GET /cortex` | counts behind the Voice Core nodes (memory/skills/soul/settings) |
+| `POST /say` | **write path** — creates a Kanban task for the CEO from a transcript |
 
 ## Design notes
 
@@ -34,6 +36,9 @@ To run it by hand instead (don't — the unit will fight you for port 8787):
 - **SSE, not WebSocket.** The UI only receives pushed state, and `EventSource` is
   built into every browser. A WebSocket would add a dependency and a handshake for
   the same result.
+- **`/say` is the only write endpoint.** Everything else reads. It requires the
+  `X-Helix-Voice: 1` header so a random web page cannot make a browser POST to
+  localhost; the preflight is never answered, so the request is never sent.
 - **Bound to `127.0.0.1` explicitly.** Verified: reachable on loopback (200), refused
   on the LAN address `192.168.100.97:8787`. Never widen this — Hermes's own routes
   assume no auth.

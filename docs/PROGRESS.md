@@ -737,3 +737,91 @@ edit. Verified: 6 desks render, and an in-page poller caught a real task driving
 ```
 helix (CEO)  research  pc  dev  vision  comm     all on stealth/space-bunny-alpha + 2 fallbacks
 ```
+
+---
+
+## 2026-09-30 — Voice Core (spec §16.2 / §9)
+
+### `hermes-live-voice` evaluated and REJECTED — three hard blockers
+
+Build spec §4.2 and requirements §9 both say to check this first. Cloned and read the
+setup docs. It is a genuinely good fit for barge-in, but it cannot run here:
+
+| provider | blocker |
+|---|---|
+| Local HuggingFace | **Apple Silicon only** (managed setup). This box is x86_64. `docs/setup.md:38` also requires **≥12 GB RAM**; this has 6.9 GB. Two independent failures. |
+| OpenAI Realtime | Paid API — violates the free-only rule (§1). |
+| Gemini Live | Routes audio to Google — requirements §5.3 is a *standing* constraint to keep data away from Google. |
+
+Not installed. Recorded so a future session does not re-litigate it.
+
+**The reuse that did apply:** requirements §16.2 says "reuse the existing Three.js orb
+work already done for the old Jarvis dashboard rather than rebuilding it." It is real —
+`orbScene.ts`, 858 lines, with EffectComposer, UnrealBloomPass and a chromatic-aberration
+shader. Reused rather than rewritten:
+
+- Transpiled with **esbuild 0.25.12** (already on this box via gods-eye-view) rather
+  than hand-stripping 47 type annotations: 30 KB TS → 22.2 KB JS in 10 ms, with the
+  `three` imports preserved as bare specifiers.
+- The archive's vendored three is a **2021 UMD build** and its addons are classic
+  scripts, which do not satisfy `three/addons/…` ES imports. So three comes from
+  unpkg via an **import map**. This is the one CDN dependency in Helix; swap the two
+  import-map entries for local copies if it must run offline.
+
+### Two real bridge bugs found while wiring it
+
+1. **Sibling assets were not served.** `orbScene.js` 404'd — the bridge only served the
+   one HTML file per route. Added asset serving restricted to realpaths under `ui/`
+   and to a safe extension list. Re-tested traversal: `/../.env`,
+   `/voice-core/../../.hermes/.env`, `%2e%2e` encodings all still **404**.
+2. **`Content-Type` was hardcoded `text/html` for every file**, so the module script
+   arrived as HTML and was rejected outright ("Strict MIME type checking is enforced
+   for module"). Now uses `mimetypes.guess_type`. Verified: `orbScene.js` →
+   `text/javascript; charset=utf-8`.
+
+### New bridge endpoints
+- **`/cortex`** — real counts for the Memory/Skills/Soul/Settings nodes, counted off the
+  filesystem so the graph cannot drift: `skills 12, soul 6, settings 6, memory 0`.
+  `memory 0` is a **true zero** — the dirs exist in all 6 profiles and none has a `.md`
+  in it yet, not a counting bug. (First version counted only the default profile and
+  read 0 there too; now summed across profiles so it can't under-report later.)
+- **`/say` (POST)** — turns a voice transcript into a real Kanban task for the CEO.
+  Shells out to `hermes kanban create` rather than INSERTing into `kanban.db`, because
+  the board has claim locks, event rows and sequences that Hermes owns; raw SQL would
+  make tasks the dispatcher doesn't understand.
+
+  `/say` is the bridge's **first write path**, so it is CSRF-guarded: it requires
+  `X-Helix-Voice: 1`, which forces a preflight that is never answered, so a random web
+  page cannot make a browser send it. Verified from the page's own origin:
+  with header → `200 {ok:true, task:…}`, without → `403`.
+
+### Verified end-to-end — voice really reaches Helix
+From the browser's own origin, using the exact request the Send button makes:
+`/say` → `t_4850ed07` → dispatch → CEO ran it → replied **`UI_PATH_OK`**. Also via
+curl: `t_c372f0b0` → **`VOICE_E2E_OK`**. Empty transcript rejected. So this panel is
+wired to live state, not a mock.
+
+### ⚠ Barge-in is implemented but NOT verified — and I could not verify it here
+Barge-in is the one *required* feature of this panel (requirements §9: the old Jarvis
+had to be closed and restarted mid-sentence). The code path is there: continuous
+recognition, and any final transcript arriving while `speaking` calls
+`speechSynthesis.cancel()` immediately.
+
+**This environment has no audio output device.** Measured, not assumed:
+`speak()` does set state to `SPEAKING` and `speechSynthesis.speaking` did become
+`true` — but the utterance ended within 100 ms, every time. A cancel test found
+`wasSpeakingBeforeCancel: false`, i.e. there was never a long enough utterance to
+interrupt. So the mechanism is unproven here; it needs a machine with a speaker and a
+mic. **Do not record barge-in as working until it has been heard working.**
+
+### ⚠ Chrome's Web Speech API conflicts with §5.3
+The browser STT/TTS used here is free and needs no key, but Chrome's Web Speech
+recognition **sends microphone audio to Google**. §5.3 is a standing constraint to
+keep data away from Google. The page shows a permanent warning about this. The
+privacy-respecting replacement is `drakulavich/kesha-voice-kit` (local, 25 languages,
+no key) or Vosk — **not installed**, because doing it properly is a separate piece of
+work and shipping the privacy leak silently was the alternative. Flagged, not hidden.
+
+Also noted: no wake word yet (§9 lists it), no Urdu/mixed support beyond whatever
+`recog.lang` is set to — the SOUL/spec call for English/Urdu/mixed and the browser
+default will not cover that. Both are honest gaps in this version.

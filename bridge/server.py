@@ -11,9 +11,13 @@ plus a handshake protocol to get the same thing.
 """
 
 import argparse
+import fnmatch
 import json
+import mimetypes
 import os
+import re
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -28,8 +32,10 @@ UI_DIR = os.path.join(HERE, "..", "ui")
 PAGES = {
     "/": "agent-town/index.html",
     "/world-monitor/": "world-monitor/index.html",
+    "/voice-core/": "voice-core/index.html",
 }
 KANBAN_DB = os.path.expanduser("~/.hermes/kanban.db")
+HERMES_HOME = os.path.expanduser("~/.hermes")
 
 # Keyless public RSS. Al Jazeera is deliberately absent - unreachable from this box.
 FEEDS = [
@@ -149,6 +155,61 @@ def headlines():
     return data
 
 
+def _count(path, pattern="*"):
+    try:
+        return len([p for p in os.listdir(path)
+                    if fnmatch.fnmatch(os.path.basename(p), pattern)])
+    except OSError:
+        return 0
+
+
+def cortex():
+    """Real counts behind the Voice Core's Memory / Skills / Soul / Settings nodes.
+
+    Counted off the filesystem, so the graph cannot drift from reality.
+    """
+    profiles = [HERMES_HOME]
+    pd = os.path.join(HERMES_HOME, "profiles")
+    if os.path.isdir(pd):
+        profiles += [os.path.join(pd, p) for p in sorted(os.listdir(pd))
+                     if os.path.isdir(os.path.join(pd, p))]
+    return {
+        # Counted across every profile, not just the default one, or the node
+        # reads a misleading 0 when the per-profile dirs are where memory lives.
+        "memory": sum(_count(os.path.join(h, "memories"), "*.md") for h in profiles),
+        "skills": sum(1 for p in os.listdir(os.path.join(HERMES_HOME, "skills"))
+                      if os.path.isdir(os.path.join(HERMES_HOME, "skills", p))),
+        "soul": sum(1 for h in profiles
+                    if os.path.isfile(os.path.join(h, "SOUL.md"))),
+        "settings": sum(1 for h in profiles
+                        if os.path.isfile(os.path.join(h, "config.yaml"))),
+        "profiles": len(profiles),
+    }
+
+
+def say(text):
+    """Create a Kanban task for the CEO from a voice transcript.
+
+    Shells out to `hermes kanban create` rather than INSERTing into kanban.db: the
+    board has claim locks, event rows and sequences that Hermes owns. Writing raw
+    SQL here would create tasks the dispatcher does not understand.
+    """
+    text = (text or "").strip()
+    if not text:
+        return {"ok": False, "error": "empty transcript"}
+    if len(text) > 2000:
+        return {"ok": False, "error": "transcript too long"}
+    out = subprocess.run(
+        ["hermes", "kanban", "create", text[:120] or "voice task",
+         "--body-file", "-", "--assignee", "default", "--workspace", "scratch"],
+        input=text, capture_output=True, text=True, timeout=90,
+    )
+    if out.returncode != 0:
+        return {"ok": False, "error": (out.stderr or out.stdout).strip()[:200]}
+    m = re.search(r"(t_[0-9a-f]+)", out.stdout)
+    return {"ok": True, "task": m.group(1) if m else out.stdout.strip()[:80]}
+
+
 def _selftest():
     """Check the status-derivation rules against a throwaway DB. No Hermes involved."""
     import tempfile
@@ -202,17 +263,47 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path in PAGES:
             return self._send_file(os.path.join(UI_DIR, PAGES[path]))
+        # Sibling assets for a page (voice-core pulls orbScene.js). Restricted to
+        # realpaths under ui/ so "../" cannot escape.
+        asset = os.path.realpath(os.path.join(UI_DIR, path.lstrip("/")))
+        if (asset.startswith(os.path.realpath(UI_DIR) + os.sep)
+                and os.path.isfile(asset)
+                and os.path.splitext(asset)[1] in (".js", ".css", ".svg", ".json")):
+            return self._send_file(asset)
         if path == "/state":
             return self._send_json(snapshot())
         if path == "/headlines":
             return self._send_json(headlines())
+        if path == "/cortex":
+            return self._send_json(cortex())
         if path == "/events":
             return self._sse()
         self.send_error(404)
 
-    def _send_json(self, obj):
+    def do_POST(self):
+        # /say is a WRITE path (it creates a Kanban task), unlike everything else
+        # here. Any page in any browser can POST to 127.0.0.1, so requiring a custom
+        # header forces a CORS preflight that we never answer — a foreign page then
+        # cannot make the browser send it.
+        if self.path.split("?", 1)[0] != "/say":
+            return self.send_error(404)
+        if self.headers.get("X-Helix-Voice") != "1":
+            return self._send_json({"ok": False, "error": "missing X-Helix-Voice header"}, 403)
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > 64_000:
+            return self._send_json({"ok": False, "error": "body too large"}, 413)
+        try:
+            payload = json.loads(self.rfile.read(n) or b"{}")
+        except ValueError:
+            return self._send_json({"ok": False, "error": "bad json"}, 400)
+        try:
+            return self._send_json(say(payload.get("text")))
+        except subprocess.TimeoutExpired:
+            return self._send_json({"ok": False, "error": "hermes timed out"}, 504)
+
+    def _send_json(self, obj, code=200):
         body = json.dumps(obj).encode()
-        self.send_response(200)
+        self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -223,9 +314,13 @@ class Handler(BaseHTTPRequestHandler):
             with open(path, "rb") as f:
                 body = f.read()
         except OSError as e:
-            return self.send_error(500, f"UI missing: {e}")
+            return self.send_error(500, f"missing asset: {e}")
+        # Must be right: module scripts are refused outright under a wrong MIME type.
+        ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        if ctype.startswith("text/") or ctype in ("application/json", "image/svg+xml"):
+            ctype += "; charset=utf-8"
         self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

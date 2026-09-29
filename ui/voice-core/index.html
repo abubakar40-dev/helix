@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Helix — Voice Core</title>
+
+<!-- Three.js from unpkg. The vendored copy in the old Jarvis archive is a 2021 UMD
+     build; orbScene.js is written against ES modules + three/addons, so it needs
+     the modern module build. Swap these two entries for a local copy if this must
+     run with no internet. -->
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
+</script>
+
+<style>
+  :root{
+    --bg:#0b0e13; --panel:#131820; --line:#232a33; --text:#e6edf3; --dim:#8b949e;
+    --accent:#58a6ff; --live:#3fb950; --warn:#d29922; --err:#f85149; --orb:#7c5cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden;
+       font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+  header{display:flex;align-items:baseline;gap:14px;padding:13px 20px;border-bottom:1px solid var(--line);flex:none}
+  h1{font-size:14px;letter-spacing:.2em;text-transform:uppercase;margin:0}
+  .sub{color:var(--dim);font-size:11px}
+  .sub b{color:var(--accent);font-weight:600}
+  #state{margin-left:auto;font-size:11px;letter-spacing:.18em;text-transform:uppercase;
+         border:1px solid var(--line);border-radius:999px;padding:3px 12px;color:var(--dim)}
+  #state[data-s=LISTENING]{color:var(--live);border-color:var(--live)}
+  #state[data-s=THINKING],#state[data-s=WORKING]{color:var(--accent);border-color:var(--accent)}
+  #state[data-s=SPEAKING]{color:var(--orb);border-color:var(--orb)}
+  #state[data-s=WARNING]{color:var(--warn);border-color:var(--warn)}
+  #state[data-s=ERROR]{color:var(--err);border-color:var(--err)}
+  main{flex:1;display:flex;min-height:0}
+  #stage{flex:1;position:relative;min-width:0}
+  #orb{position:absolute;inset:0}
+  svg#links{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .node{position:absolute;transform:translate(-50%,-50%);text-align:center;user-select:none}
+  .node .dot{width:13px;height:13px;border-radius:50%;margin:0 auto 7px;
+             background:var(--panel);border:2px solid var(--dim);transition:all .3s}
+  /* The orb's bloom washes out plain text — give the labels their own dark plate. */
+  .node .lbl{font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--text);
+             background:rgba(8,10,14,.82);border:1px solid var(--line);border-radius:999px;
+             padding:3px 10px;display:inline-block;backdrop-filter:blur(3px)}
+  .node .n{font-size:10px;color:var(--dim);margin-top:4px;background:rgba(8,10,14,.7);
+           border-radius:4px;padding:1px 5px;display:inline-block}
+  .node.live .dot{border-color:var(--live);background:var(--live);
+                   box-shadow:0 0 0 5px rgba(63,185,80,.15)}
+  .node.live .lbl{color:var(--live);border-color:var(--live)}
+  aside{width:340px;flex:none;border-left:1px solid var(--line);background:var(--panel);
+        display:flex;flex-direction:column;min-height:0}
+  .pad{padding:16px}
+  button{width:100%;padding:13px;border-radius:8px;border:1px solid var(--line);
+         background:#1a212b;color:var(--text);font:inherit;font-size:13px;letter-spacing:.12em;
+         text-transform:uppercase;cursor:pointer;transition:all .2s}
+  button:hover:not(:disabled){border-color:var(--accent)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.live{background:var(--err);border-color:var(--err);color:#fff}
+  .hint{color:var(--dim);font-size:11px;margin-top:10px;line-height:1.6}
+  h2{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin:0 0 8px;font-weight:600}
+  #final{font-size:13px;min-height:44px;border:1px dashed var(--line);border-radius:8px;padding:11px}
+  #interim{color:var(--dim);font-size:12px;margin-top:7px;min-height:18px;font-style:italic}
+  .row{display:flex;gap:8px;margin-top:10px}
+  .row button{width:auto;flex:1;padding:9px;font-size:11px}
+  #log{flex:1;overflow-y:auto;border-top:1px solid var(--line);padding:10px 16px;font-size:11.5px}
+  .l{color:var(--dim);padding:2px 0;border-bottom:1px solid #1a212b}
+  .l b{color:var(--accent);font-weight:500}
+  .warnbox{background:rgba(210,153,34,.1);border:1px solid rgba(210,153,34,.4);
+           color:var(--warn);border-radius:8px;padding:10px;font-size:11px;margin-top:10px;line-height:1.55}
+</style>
+</head>
+<body>
+<header>
+  <h1>Helix · Voice Core</h1>
+  <span class="sub">orb: <b>reused from the old Jarvis</b> · barge-in live · STT: browser Web&nbsp;Speech</span>
+  <span id="state" data-s="IDLE">IDLE</span>
+</header>
+
+<main>
+  <div id="stage">
+    <div id="orb"></div>
+    <svg id="links"></svg>
+    <!-- Memory / Skills / Soul / Settings branch into the central orb (spec 16.2) -->
+    <div class="node" data-node="memory"  style="left:50%;top:16%"><div class="dot"></div><div class="lbl">Memory</div><div class="n" data-count>–</div></div>
+    <div class="node" data-node="skills"  style="left:83%;top:44%"><div class="dot"></div><div class="lbl">Skills</div><div class="n" data-count>–</div></div>
+    <div class="node" data-node="soul"    style="left:50%;top:84%"><div class="dot"></div><div class="lbl">Soul</div><div class="n" data-count>–</div></div>
+    <div class="node" data-node="settings" style="left:17%;top:44%"><div class="dot"></div><div class="lbl">Settings</div><div class="n" data-count>–</div></div>
+  </div>
+
+  <aside>
+    <div class="pad">
+      <button id="toggle">Start</button>
+      <div class="hint">While Helix is speaking, <b>just talk</b> — it stops mid-sentence and
+        listens to you instead. That is barge-in, and it is the thing the old Jarvis could not do.</div>
+      <div class="warnbox" id="privacy">⚠ Chrome's Web Speech API sends microphone audio to
+        <b>Google</b> for recognition. Requirements §5.3 says keep data away from Google.
+        Swap in a local backend (kesha-voice-kit / Vosk) before using this for anything private.</div>
+    </div>
+    <div class="pad" style="border-top:1px solid var(--line);padding-top:14px">
+      <h2>Heard</h2>
+      <div id="final">—</div>
+      <div id="interim"></div>
+      <div class="row">
+        <button id="send" disabled>Send to Helix</button>
+        <button id="speak">Test TTS</button>
+      </div>
+    </div>
+    <div id="log"></div>
+  </aside>
+</main>
+
+<script type="module">
+import { createOrbScene } from "./orbScene.js";
+
+const $ = s => document.querySelector(s);
+const stage = $("#stage"), links = $("#links"), logEl = $("#log");
+let orb = null, running = false, recog = null, speaking = false, lastFinal = "";
+
+// ── orb + node graph ────────────────────────────────────────────────────────
+try {
+  orb = createOrbScene($("#orb"));
+  log("orb ready", "ok");
+} catch (e) {
+  log("orb failed: " + e.message, "err");
+  $("#orb").innerHTML = `<div style="padding:24px;color:#f85149">Three.js could not start: ${e.message}</div>`;
+}
+
+function drawLinks() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  links.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  const cx = w / 2, cy = h / 2, r = Math.min(w, h) * 0.17;
+  links.innerHTML = [...document.querySelectorAll(".node")].map(n => {
+    const x = n.offsetLeft, y = n.offsetTop;
+    const a = Math.atan2(y - cy, x - cx);
+    const x2 = cx + Math.cos(a) * r, y2 = cy + Math.sin(a) * r;
+    return `<line x1="${x}" y1="${y}" x2="${x2}" y2="${y2}" stroke="#232a33" stroke-width="1.5"/>`;
+  }).join("");
+}
+addEventListener("resize", drawLinks);
+setTimeout(drawLinks, 60);
+
+// Counts come from the bridge, so the graph shows real Helix state.
+fetch("/state").then(r => r.json()).then(() => {}).catch(() => {});
+fetch("/cortex").then(r => r.ok ? r.json() : null).then(c => {
+  if (!c) return;
+  for (const n of document.querySelectorAll(".node")) {
+    const v = c[n.dataset.node];
+    if (v == null) continue;
+    n.querySelector("[data-count]").textContent = v;
+    if (v > 0) n.classList.add("live");
+  }
+}).catch(() => {});
+
+// ── state + log ─────────────────────────────────────────────────────────────
+function setState(s) { $("#state").textContent = s; $("#state").dataset.s = s; }
+function log(msg, kind = "") {
+  const d = document.createElement("div");
+  d.className = "l"; d.innerHTML = kind ? `<b>${kind}</b> ${msg}` : msg;
+  logEl.prepend(d);
+  while (logEl.children.length > 60) logEl.lastChild.remove();
+}
+
+// ── TTS + BARGE-IN ──────────────────────────────────────────────────────────
+function speak(text) {
+  if (!text) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = 1.02; u.pitch = 1;
+  speaking = true; setState("SPEAKING");
+  u.onend = u.onerror = () => { speaking = false; setState(running ? "LISTENING" : "IDLE"); };
+  speechSynthesis.speak(u);
+}
+
+/** The barge-in. Any detected speech cancels playback immediately. */
+function bargeIn(what) {
+  if (!speaking) return false;
+  speechSynthesis.cancel();          // stop mid-word
+  speaking = false;
+  log(`barge-in — cut off by: "${what}"`, "⚡");
+  setState("LISTENING");
+  return true;
+}
+
+// ── STT ─────────────────────────────────────────────────────────────────────
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+function start() {
+  if (!SR) { setState("ERROR"); log("no Web Speech API in this browser", "err"); return; }
+  recog = new SR();
+  recog.continuous = true;
+  recog.interimResults = true;
+  recog.lang = navigator.language || "en-US";
+
+  recog.onresult = e => {
+    let interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) {
+        lastFinal = t.trim();
+        $("#final").textContent = lastFinal;
+        $("#send").disabled = !lastFinal;
+        if (speaking && lastFinal) bargeIn(lastFinal);
+      } else interim += t;
+    }
+    $("#interim").textContent = interim;
+  };
+  recog.onerror = e => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      setState("ERROR"); log("mic permission denied", "err"); stop();
+    } else if (e.error === "no-speech") { /* normal, keep going */ }
+    else log("speech error: " + e.error, "warn");
+  };
+  recog.onend = () => { if (running) { try { recog.start(); } catch {} } };  // continuous
+  try { recog.start(); running = true; setState("LISTENING"); log("listening (lang " + recog.lang + ")"); }
+  catch (e) { setState("ERROR"); log("could not start mic: " + e.message, "err"); }
+}
+function stop() {
+  running = false;
+  if (recog) { try { recog.stop(); } catch {} }
+  speechSynthesis.cancel(); speaking = false;
+  setState("IDLE"); log("stopped");
+}
+
+$("#toggle").onclick = () => {
+  running ? stop() : start();
+  $("#toggle").textContent = running ? "Stop" : "Start";
+  $("#toggle").classList.toggle("live", running);
+};
+$("#speak").onclick = () => speak("Helix voice core online. Say something and I will stop talking and listen.");
+
+$("#send").onclick = async () => {
+  if (!lastFinal) return;
+  $("#send").disabled = true;
+  setState("WORKING");
+  log(`→ Helix: "${lastFinal}"`, "out");
+  try {
+    const r = await fetch("/say", { method: "POST",
+                                   headers: { "Content-Type": "application/json",
+                                              "X-Helix-Voice": "1" },
+                                   body: JSON.stringify({ text: lastFinal }) });
+    const d = await r.json();
+    if (d.ok) { log(`task ${d.task} created`, "✓"); setState("THINKING"); }
+    else { log("send failed: " + (d.error || r.status), "err"); setState("ERROR"); }
+  } catch (e) { log("bridge unreachable: " + e.message, "err"); setState("ERROR"); }
+};
+
+setState("IDLE");
+drawLinks();
+</script>
+</body>
+</html>

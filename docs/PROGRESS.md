@@ -509,4 +509,103 @@ UI, and a deliberate `restart` comes back healthy with all three profiles report
 - No messaging platform is configured, so no real gateway turn has been exercised.
   Blocked on the `comm` profile (Phase 5).
 - Per spec §5, still deferred: Easy Diffusion, Obsidian, link-paste downloader, the
-  §17 skills shortlist, Voice Core, World Monitor.
+  §17 skills shortlist, Voice Core.
+
+---
+
+## 2026-09-30 (later) — World Monitor panel
+
+### The globe is NOT a static app — the obvious approach fails
+First tried the laziest thing: `npm run build` (succeeded, 7.6s, 31MB dist) served by
+`python3 -m http.server`. **Wrong.** The globe rendered — real ArcGIS imagery and
+reearth terrain — but its own data layers were dead:
+
+```
+/api/setup/status            404
+/api/realtime/debug-log      501 Unsupported method ('POST')
+/api/openai/hud-summary      501
+```
+
+Cause, from the source: `server/standalone/key-setup.js:242` — its provider routes
+install via `configureServer` and **"never configurePreviewServer"**, and
+`api-not-found.js` returns 404 for `/api/*` in preview. So a built bundle is
+permanently missing every realtime layer. The dev server is the only mode with data.
+`helix-globe.service` therefore runs `npm run dev`, not the dist.
+
+Reverted the static service. Verified the dev server restores everything:
+`/api/setup/status` 200, and real payloads from `/api/celestrak/starlink` (live TLEs,
+epoch day-272-of-2026 = current), `/api/celestrak/active`, `/api/launches`
+(SpaceDevs, 27 results).
+
+### The globe refused to be embedded — needed a local patch
+The first iframe rendered **black**. Not a timing issue:
+
+```
+Framing 'http://127.0.0.1:4173/' violates the following Content Security Policy
+directive: "frame-ancestors 'none'". The request has been blocked.
+```
+
+`build/vite.js` hardcoded `X-Frame-Options: DENY` and `CSP: frame-ancestors 'none'`
+on the document. Not env-configurable. Human authorised touching files outside
+`~/helix` and embedding at any cost.
+
+Patched **one** file — `build/vite.js`, `headers: {}` — with a `ponytail:` comment
+saying to re-add on `git pull`.
+
+Deliberately did **not** touch `key-setup.js:81-82`, which sets the same headers on
+the credential-status JSON. Two reasons: it guards a real credential surface, and
+XHR is not affected by framing headers — so it was never what blocked the embed.
+Re-verified after the patch: document headers gone, `/api/setup/status` 200, and the
+credential-response headers still present.
+
+Also had to cache-bust: the browser kept replaying the old cached response *with* its
+headers, so the CSP error persisted after the server fix. A `?cb=` on the iframe src
+plus a bridge fix — `do_GET` now strips the query string, which was a real bug
+(`/world-monitor/?cb=2` 404'd before).
+
+### Headlines: currentslab/news-api-skills evaluated, NOT installed
+Cloned and read it rather than going by name. Findings:
+- It is a **Hermes skill** (agent instructions), not a server component — it would not
+  serve a UI panel even if installed.
+- `SKILL.md:4` — "Requires internet access and **CURRENTS_API_KEY**"; registration
+  required, and no key is configured.
+- Free-only rule + "install only if you actually use it" → **skipped.**
+
+Used keyless public RSS instead, stdlib `urllib` + `xml.etree` in the bridge, ~35
+lines, nothing installed: BBC World, NPR, Ars Technica, Hacker News. Al Jazeera tested
+and dropped — unreachable from this box (HTTP 000). 5-minute cache.
+
+`/headlines` degrades per feed rather than failing: during testing Hacker News timed
+out and the panel showed `unreachable — <urlopen error timed out>` while the other 34
+stories still rendered. That is the intended behaviour, not a bug.
+
+### Verification — real data, not placeholders
+- **Globe:** screenshot of the live panel shows a real Cesium 3D render — satellite
+  imagery of Austin, Texas with streets and buildings, HUD reading
+  `NORMAL METRO NEAR FROST BANK TOWER (AUSTIN)`, live `RSN: 0.34M MTIRS: 1.71`, real
+  clock, Cesium ion attribution. Console shows **zero** CSP errors.
+- **Headlines:** 46 stories rendered; BBC items dated `Tue, 29 Sep 2026` (today), links
+  resolve to real `bbc.co.uk` articles.
+- First-launch onboarding dismissed once in the globe's own origin so it persists into
+  the iframe via localStorage.
+- Path traversal still refused after the query-stripping change: `404`.
+
+### Services
+| service | port | state | mem |
+|---|---|---|---|
+| `helix-bridge` | 8787 | active, enabled | 19 MB |
+| `helix-globe` | 4173 | active, enabled | 229 MB |
+| `hermes-gateway` | — | active, enabled | — |
+
+All survive logout (linger). `helix-globe` has `MemoryMax=1200M` — it is the
+memory-hungry one on a 6.9GB box. Restart-tested: comes back healthy with root 200
+and api 200. RAM dipped to 1.6GB free with several browser tabs open; back to 2.4GB
+after closing them — worth remembering, the globe + a few tabs is the budget.
+
+### Not done
+- **Voice Core** — stopped here as instructed.
+- Globe HUD shows "8 KEYS WAITING": 8 optional provider keys (Google Maps, OpenAI,
+  etc.) unconfigured. Core globe + satellites + launches work keyless. Only add keys if
+  a specific layer is actually wanted — that is a paid/keyed decision, not a default.
+- `~/helix/ui/world-monitor/` is standalone by design; no shared shell/nav with Agent
+  Town yet, per instruction.

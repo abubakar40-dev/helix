@@ -17,11 +17,29 @@ import sqlite3
 import sys
 import threading
 import time
+import urllib.request
+import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-UI_INDEX = os.path.join(HERE, "..", "ui", "agent-town", "index.html")
+UI_DIR = os.path.join(HERE, "..", "ui")
+# Explicit allowlist, not a generic static server: no path traversal, no surprises.
+PAGES = {
+    "/": "agent-town/index.html",
+    "/world-monitor/": "world-monitor/index.html",
+}
 KANBAN_DB = os.path.expanduser("~/.hermes/kanban.db")
+
+# Keyless public RSS. Al Jazeera is deliberately absent - unreachable from this box.
+FEEDS = [
+    ("BBC World", "https://feeds.bbci.co.uk/news/world/rss.xml"),
+    ("NPR", "https://feeds.npr.org/1001/rss.xml"),
+    ("Ars Technica", "https://feeds.arstechnica.com/arstechnica/index"),
+    ("Hacker News", "https://hnrss.org/frontpage"),
+]
+HEADLINE_TTL = 300  # seconds; be polite to the feeds and to a 7GB box
+_headline_cache = {"at": 0, "data": None}
 
 HOST = "127.0.0.1"  # never 0.0.0.0 - see spec: no auth assumed on Hermes routes
 
@@ -87,6 +105,46 @@ def snapshot():
     return out
 
 
+def _one_feed(name, url, limit=12):
+    """Fetch + parse one RSS feed. Never raises - a dead feed is not a dead endpoint."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Helix/1.0 (local)"})
+        with urllib.request.urlopen(req, timeout=12) as r:
+            root = ET.fromstring(r.read(2_000_000))
+    except Exception as e:
+        return {"source": name, "error": str(e)[:120], "items": []}
+
+    items = []
+    for it in root.iter("item"):
+        t = (it.findtext("title") or "").strip()
+        if not t:
+            continue
+        items.append({
+            "title": t,
+            "link": (it.findtext("link") or "").strip(),
+            "date": (it.findtext("pubDate") or "").strip(),
+        })
+        if len(items) >= limit:
+            break
+    return {"source": name, "error": None, "items": items}
+
+
+def headlines():
+    """RSS headlines for the World Monitor, cached briefly.
+
+    stdlib only. No API key, no account, nothing to install - which is why
+    currentslab/news-api-skills was not used (see docs/PROGRESS.md).
+    """
+    if _headline_cache["data"] and time.time() - _headline_cache["at"] < HEADLINE_TTL:
+        return _headline_cache["data"]
+    with ThreadPoolExecutor(max_workers=len(FEEDS)) as ex:
+        feeds = list(ex.map(lambda f: _one_feed(*f), FEEDS))
+    data = {"ts": int(time.time()), "feeds": feeds,
+            "total": sum(len(f["items"]) for f in feeds)}
+    _headline_cache.update(at=time.time(), data=data)
+    return data
+
+
 def _selftest():
     """Check the status-derivation rules against a throwaway DB. No Hermes involved."""
     import tempfile
@@ -136,11 +194,15 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
-            return self._send_file(UI_INDEX)
-        if self.path == "/state":
+        # Match on the path only; a cache-busting query must not 404 the page.
+        path = self.path.split("?", 1)[0]
+        if path in PAGES:
+            return self._send_file(os.path.join(UI_DIR, PAGES[path]))
+        if path == "/state":
             return self._send_json(snapshot())
-        if self.path == "/events":
+        if path == "/headlines":
+            return self._send_json(headlines())
+        if path == "/events":
             return self._sse()
         self.send_error(404)
 

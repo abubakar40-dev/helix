@@ -318,9 +318,94 @@ real test file. I checked all three claims myself rather than trusting the summa
 around it with a different tool, script, or reworded command"), and trash added to the
 safe-without-asking list.
 
-### Step 5 — bridge + Agent Town: not started, gate is now satisfied
+### Step 5 — bridge + two-desk Agent Town: **BUILT AND VERIFIED LIVE**
 
-Spec §6 step 5 says start this only after CEO + 2 working sub-agents. That condition is
-now met: CEO delegates over Kanban, `research` and `pc` both verified end-to-end.
-Not started in this session — it is the first genuinely new code in the project, and it
-should be its own decision rather than a footnote at the end of a security fix.
+Scope as given: bridge server + Agent Town with exactly two desks (research, pc),
+prove the data path is real. Not mocked anywhere.
+
+**Bridge** — `~/helix/bridge/server.py`, ~170 lines, **stdlib only** (verified by AST
+scan: `non-stdlib: none`). No pip, no venv, nothing to keep in sync.
+
+Design decisions, and why:
+
+- **Reads `~/.hermes/kanban.db` directly via SQLite `mode=ro`.** No Hermes internals,
+  no dashboard API, no auth, no polling of a subprocess. The board *is* the source of
+  truth. Read-only is enforced, not just claimed — tested:
+  `PASS: write refused -> attempt to write a readonly database`, and the target row
+  was confirmed untouched afterwards.
+- **SSE, not WebSocket.** The spec suggested "e.g. via WebSocket", but the UI only
+  ever *receives* pushed state and every browser ships `EventSource`. A WebSocket here
+  buys a dependency plus a handshake protocol for the identical result. `/events`
+  pushes a snapshot when it changes; `/state` returns one on demand.
+- Serves the UI itself from the same port — one process instead of two plus CORS.
+
+**Status rules** (the only non-trivial logic, so `--selftest` covers it against a
+throwaway DB with no Hermes involved — `selftest OK`):
+`running` task → `working`; else any `blocked` task → `blocked`; else `idle`.
+
+**Localhost-only — proven, not assumed.** `ss` shows `127.0.0.1:8787`, but that was not
+trusted. Real test: loopback `200`, LAN address `192.168.100.97:8787` → `000`
+(connection refused). Correctly unreachable off-box.
+
+**Agent Town** — `~/helix/ui/agent-town/index.html`, one page, no build step, no
+framework, no assets. Two desks only, as scoped. `helix` is in the payload but has no
+desk yet. Includes the live event stream because it was already in the snapshot and it
+is the most direct evidence the data path is real.
+
+#### Verification: the UI tracked real Kanban activity, correlated to the DB
+
+Installed an in-page poller (400ms) that recorded the *rendered* `data-status` and
+task text, then dispatched two genuine tasks — one per desk. Correlated against the
+authoritative `task_events` timestamps afterwards:
+
+| real Kanban event | DB time (UTC) | UI recorded | lag |
+|---|---|---|---|
+| `t_54e56b99` claimed → research **working** | 04:52:27 | 04:52:28 | +1s |
+| `t_54e56b99` completed → research **blocked** | 04:53:52 | 04:53:53 | +1s |
+| `t_19d30ba8` claimed → pc **working** | 04:54:12 | 04:54:13 | +1s |
+| `t_19d30ba8` completed → pc **idle** | 04:54:30 | 04:54:31 | +1s |
+
+Full UI-recorded timeline, end to end, no manual reload:
+
+```
+04:52:19  research=blocked | pc=idle                 (baseline)
+04:52:28  research=working t_54e56b99 | pc=idle
+04:53:53  research=blocked | pc=idle
+04:54:13  research=blocked | pc=working t_19d30ba8
+04:54:31  research=blocked | pc=idle
+```
+
+`pc` finished in ~18s, faster than any external poll could catch — the in-page poller
+caught it, which is exactly why the state had to be read out of the DOM rather than
+`/state`. Both desks, both directions, all four transitions within 1s of the DB.
+
+Screenshot taken mid-run confirms the rendered state, not just the DOM attribute:
+research **WORKING** (green, left bar lit) showing `t_54e56b99`, pc **IDLE**, event
+stream showing live `created`/`claimed`/`spawned`/`heartbeat` rows.
+
+Task results also checked rather than trusted (§20):
+- `t_54e56b99` (research) — real answer, 2 plain-text source URLs, per its SOUL.md rule.
+- `t_19d30ba8` (pc) — claimed kernel `7.0.0-34-generic`, hostname `Wick`; both
+  re-checked with `uname -r` / `hostname`, exact match.
+
+Notes carried forward:
+- A profile that just finished shows `blocked` if stale stuck tasks remain — true for
+  `research`, from the pre-fix smoke tests. The desk names the stuck task so it is not
+  ambiguous. Honest rather than smoothed over; refine only if it proves noisy.
+- The bridge is **not** a systemd service, so it dies with the shell. Documented in
+  `bridge/README.md` as a deliberate deferral, not an oversight — the gateway already
+  survives logout via linger and the bridge can be wrapped the same way when wanted.
+
+#### ⚠ Still open — carry into Phase 5/7: gateway has no API key
+`hermes-gateway` (systemd) does **not** have `OPENROUTER_API_KEY` in its environment —
+it lives in `~/.bashrc`, which systemd never sources. Every gateway-mediated turn
+(WhatsApp, Telegram, any channel the `comm` profile will add) will fail with
+`No API key found for provider 'openrouter'`, exactly like the Kanban workers did in
+step 2. The kanban *workers* are fixed (each profile has the key in its own `.env`);
+the **gateway process itself is not**. Fix is the same shape: put the key where
+systemd can see it (a systemd `EnvironmentFile=` or `~/.config/environment.d/`), then
+restart the gateway and confirm with a real message round-trip. Not done in this
+session because it means editing the user's service definition.
+
+Also still deferred per spec §5: Easy Diffusion, Obsidian, link-paste downloader, the
+§17 skills shortlist, Voice Core, World Monitor.

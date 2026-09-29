@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Helix — Agent Town</title>
+<style>
+  :root {
+    --bg:#0e1116; --panel:#161b22; --line:#232a33; --text:#e6edf3; --dim:#8b949e;
+    --idle:#4b5563; --working:#3fb950; --blocked:#d29922; --accent:#58a6ff;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; padding:28px; }
+  h1 { font-size:16px; letter-spacing:.18em; text-transform:uppercase; margin:0 0 4px; }
+  .sub { color:var(--dim); font-size:12px; margin-bottom:22px; }
+  .sub b { color:var(--accent); font-weight:600; }
+  .town { display:flex; gap:18px; flex-wrap:wrap; margin-bottom:26px; }
+  .desk { flex:1 1 300px; background:var(--panel); border:1px solid var(--line);
+          border-radius:10px; padding:18px 20px; position:relative; overflow:hidden; }
+  .desk::before { content:""; position:absolute; inset:0 auto 0 0; width:3px; background:var(--idle); }
+  .desk[data-status=working]::before { background:var(--working); }
+  .desk[data-status=blocked]::before { background:var(--blocked); }
+  .desk-top { display:flex; align-items:center; gap:10px; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--idle); flex:none; }
+  .desk[data-status=working] .dot { background:var(--working); animation:pulse 1.1s ease-in-out infinite; }
+  .desk[data-status=blocked] .dot { background:var(--blocked); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+  .who { font-size:15px; font-weight:600; }
+  .role { color:var(--dim); font-size:11px; }
+  .state { margin-left:auto; font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+           color:var(--dim); border:1px solid var(--line); border-radius:999px; padding:2px 10px; }
+  .desk[data-status=working] .state { color:var(--working); border-color:var(--working); }
+  .desk[data-status=blocked] .state { color:var(--blocked); border-color:var(--blocked); }
+  .task { margin-top:14px; padding-top:12px; border-top:1px dashed var(--line);
+          font-size:12px; color:var(--dim); min-height:34px; }
+  .task .id { color:var(--accent); }
+  h2 { font-size:11px; letter-spacing:.18em; text-transform:uppercase;
+       color:var(--dim); margin:0 0 10px; font-weight:600; }
+  .log { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+         padding:14px 16px; max-height:230px; overflow-y:auto; }
+  .ev { display:flex; gap:10px; font-size:12px; padding:2px 0; }
+  .ev .k { color:var(--accent); min-width:96px; }
+  .ev .t { color:var(--dim); min-width:104px; overflow:hidden; text-overflow:ellipsis;
+           white-space:nowrap; max-width:40%; }
+  .ev .d { color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .err { color:#f85149; margin-bottom:16px; }
+</style>
+</head>
+<body>
+  <h1>Helix · Agent Town</h1>
+  <div class="sub">live from <b>kanban.db</b> via the bridge · <span id="age">connecting…</span></div>
+  <div id="err" class="err" hidden></div>
+  <div class="town" id="town"></div>
+  <h2>Event stream</h2>
+  <div class="log" id="log"></div>
+
+<script>
+// Scope: two desks only (research, pc). helix exists in the bridge payload but
+// has no desk yet — add one when there are enough working sub-agents to justify it.
+const DESKS = ["research", "pc"];
+const town = document.getElementById("town");
+const log = document.getElementById("log");
+const err = document.getElementById("err");
+let lastEventId = null;
+
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c =>
+  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+
+function render(s) {
+  for (const p of s.profiles.filter(p => DESKS.includes(p.id))) {
+    let d = town.querySelector(`[data-id="${p.id}"]`);
+    if (!d) {
+      d = document.createElement("div");
+      d.className = "desk";
+      d.dataset.id = p.id;
+      d.innerHTML = `<div class="desk-top"><span class="dot"></span>
+        <span><span class="who"></span><br><span class="role"></span></span>
+        <span class="state"></span></div><div class="task"></div>`;
+      town.appendChild(d);
+    }
+    d.dataset.status = p.status;
+    d.querySelector(".who").textContent = p.name;
+    d.querySelector(".role").textContent = p.role;
+    d.querySelector(".state").textContent = p.status;
+    d.querySelector(".task").innerHTML = p.task
+      ? `<span class="id">${esc(p.task.id)}</span> ${esc(p.task.title)}`
+      : "no open task";
+  }
+
+  // Only redraw the log when something actually changed, so it doesn't flicker.
+  const top = s.events[0] && `${s.events[0].task}:${s.events[0].kind}:${s.events[0].at}`;
+  if (top !== lastEventId) {
+    lastEventId = top;
+    log.innerHTML = s.events.map(e => `<div class="ev">
+      <span class="k">${esc(e.kind)}</span>
+      <span class="t">${esc(e.task)}</span>
+      <span class="d">${esc(e.detail.slice(0, 90))}</span></div>`).join("");
+  }
+}
+
+const es = new EventSource("/events");
+es.onmessage = e => {
+  err.hidden = true;
+  try { render(JSON.parse(e.data)); } catch (ex) { err.textContent = ex; err.hidden = false; }
+};
+es.onerror = () => { err.textContent = "bridge disconnected — retrying…"; err.hidden = false; };
+
+setInterval(async () => {
+  try {
+    const s = await (await fetch("/state")).json();
+    document.getElementById("age").textContent = "updated " + new Date(s.ts * 1000).toLocaleTimeString();
+  } catch {}
+}, 1000);
+</script>
+</body>
+</html>

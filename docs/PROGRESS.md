@@ -442,15 +442,71 @@ grey, not the `--working` green.
 Liveness task result verified rather than trusted: `t_e03e656a` replied `ALIVE` as
 instructed.
 
-### Still open (unchanged)
-- ⚠ **`hermes-gateway` has no `OPENROUTER_API_KEY` in its environment.** Lives only in
-  `~/.bashrc`, which systemd never sources. Every gateway-mediated turn (WhatsApp,
-  Telegram, whatever `comm` adds) will fail `No API key found for provider
-  'openrouter'` — exactly what killed the Kanban workers in step 2. Workers are fixed
-  (each profile has the key in its own `.env`); the **gateway process itself is not**.
-  Fix: put the key where systemd can read it (`EnvironmentFile=` in the unit, or
-  `~/.config/environment.d/`), restart the gateway, confirm with a real message
-  round-trip. Deliberately not done — it means editing the service definition.
-- Bridge is not a systemd service; dies with the shell.
+### ❌ CORRECTION — the "gateway has no API key" warning was WRONG
+
+Earlier entries in this log claimed `hermes-gateway` has no `OPENROUTER_API_KEY` in
+its environment and that every channel turn would fail. **That is incorrect, and the
+claim is hereby retracted.** It was a leftover inference from step 2, written *before*
+the key was added to `~/.hermes/.env`, and never re-tested afterwards.
+
+Two wrong assumptions were stacked on top of each other:
+
+1. *"`.env` is loaded into `os.environ` at import time, so the gateway booted at
+   09:00:26 before the key landed at 09:03:40 and therefore missed it."*
+   Half true. `env_loader._load_dotenv_with_fallback` does load a dotenv into
+   `os.environ` — but **not on the gateway's inference path**.
+2. *"Check `/proc/<pid>/environ` to see if the gateway has the key."*
+   The wrong instrument entirely.
+
+What the code actually does — `gateway/run.py:1822`, in its own words:
+
+> `set_secret_scope` makes the profile `.env` the credential source **without mutating
+> `os.environ`**, so subprocesses never inherit cross-profile secrets.
+
+So `os.environ` holding no key is the **security property working as designed**, not
+a bug. Per turn, the gateway calls `build_profile_secret_scope(Path(profile_home))`
+and re-reads that profile's `.env` **fresh**, then `get_secret()` reads from that
+mapping. A gateway restart was never needed; a restart changes nothing.
+
+Proven by running the gateway's own resolution path (`build_profile_secret_scope` →
+`set_secret_scope` → `get_secret`, exactly `gateway/run.py:1836`):
+
+```
+  default/helix  -> resolves (len=73)
+  pc             -> resolves (len=73)
+  research       -> resolves (len=73)
+```
+
+**The step-2 fix (key in `~/.hermes/.env`) already covered the gateway.** No service
+edit, no `EnvironmentFile=`, no `~/.config/environment.d/` needed — which is what this
+log previously told the human to do.
+
+A gateway restart was performed while chasing this. Harmless (graceful drain, no
+active tasks on the board) but unnecessary, and it was based on the bad hypothesis.
+
+**Could not be end-to-end tested, and that is a real gap:** `channel_directory.json`
+is `{"platforms": {}}` — no messaging platform is configured at all, so there is no
+channel to send a real turn through. The credential-resolution path is proven; an
+actual message round-trip is not. Revisit when the `comm` profile lands (Phase 5) —
+that is the moment it becomes testable.
+
+### Bridge is now a managed service
+`~/.config/systemd/user/helix-bridge.service` — the bridge no longer dies with the
+shell, matching how `hermes-gateway` already works. Linger is enabled, so it survives
+logout too.
+
+Replaced the hand-started process from step 5 (it had been holding port 8787 the whole
+time under the original pid). Re-verified under systemd, not assumed:
+`active`, loopback `200`, LAN `192.168.100.97:8787` refused (`000`), `GET /` serves the
+UI, and a deliberate `restart` comes back healthy with all three profiles reporting
+`idle` and 25 events. `MemoryMax=150M` set, since RAM is tight on this box.
+
+    systemctl --user status helix-bridge
+    journalctl --user -u helix-bridge -f
+    systemctl --user disable --now helix-bridge   # to undo
+
+### Still open
+- No messaging platform is configured, so no real gateway turn has been exercised.
+  Blocked on the `comm` profile (Phase 5).
 - Per spec §5, still deferred: Easy Diffusion, Obsidian, link-paste downloader, the
   §17 skills shortlist, Voice Core, World Monitor.

@@ -4,6 +4,17 @@ Exposes live Hermes/Kanban state to the UI panels. Read-only, localhost-only.
 
 ## Run
 
+Now a managed service — starts on login, survives logout (linger is on):
+
+    systemctl --user status helix-bridge
+    journalctl --user -u helix-bridge -f
+    systemctl --user restart helix-bridge
+    systemctl --user disable --now helix-bridge   # undo
+
+Unit: `~/.config/systemd/user/helix-bridge.service`.
+
+To run it by hand instead (don't — the unit will fight you for port 8787):
+
     python3 ~/helix/bridge/server.py            # http://127.0.0.1:8787
     python3 ~/helix/bridge/server.py --selftest # check the status rules, no server needed
 
@@ -42,7 +53,6 @@ really is stuck. Refine later only if it proves noisy in practice.
 
 ## Not done yet
 
-- Not a systemd service — it dies with the shell. The gateway survives logout via
-  linger; if the bridge should too, wrap it the same way. Do this when it matters,
-  not before.
 - `helix` (CEO) is in the payload but has no desk yet; the UI is scoped to two desks.
+- No auth. Safe only because it binds loopback — do not widen the bind without adding
+  auth first (nothing on Hermes's own routes assumes it either).

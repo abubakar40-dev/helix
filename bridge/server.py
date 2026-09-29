@@ -44,10 +44,14 @@ _headline_cache = {"at": 0, "data": None}
 HOST = "127.0.0.1"  # never 0.0.0.0 - see spec: no auth assumed on Hermes routes
 
 # Profile id -> display name. 'default' is the CEO, display-renamed "helix".
+# Keep in sync with `hermes profile list`; a new profile wants a desk here too.
 PROFILES = [
     ("default", "helix", "CEO / Orchestrator"),
     ("research", "research", "Research"),
     ("pc", "pc", "PC Control"),
+    ("dev", "dev", "Development"),
+    ("vision", "vision", "Vision"),
+    ("comm", "comm", "Communication"),
 ]
 
 # A task in one of these states means the agent is busy right now.

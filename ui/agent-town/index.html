@@ -55,9 +55,8 @@
   <div class="log" id="log"></div>
 
 <script>
-// Scope: two desks only (research, pc). helix exists in the bridge payload but
-// has no desk yet — add one when there are enough working sub-agents to justify it.
-const DESKS = ["research", "pc"];
+// Renders whatever the bridge reports, so a new Hermes profile gets a desk for free.
+// (Was hardcoded to research+pc; that had to be edited every time an agent was added.)
 const town = document.getElementById("town");
 const log = document.getElementById("log");
 const err = document.getElementById("err");
@@ -67,7 +66,7 @@ const esc = s => String(s ?? "").replace(/[&<>"]/g, c =>
   ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
 
 function render(s) {
-  for (const p of s.profiles.filter(p => DESKS.includes(p.id))) {
+  for (const p of s.profiles) {
     let d = town.querySelector(`[data-id="${p.id}"]`);
     if (!d) {
       d = document.createElement("div");

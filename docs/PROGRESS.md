@@ -609,3 +609,131 @@ after closing them — worth remembering, the globe + a few tabs is the budget.
   a specific layer is actually wanted — that is a paid/keyed decision, not a default.
 - `~/helix/ui/world-monitor/` is standalone by design; no shared shell/nav with Agent
   Town yet, per instruction.
+
+---
+
+## 2026-09-30 (status review) — what is done, what is missing
+
+Measured, not assumed. All services healthy, every endpoint 200.
+
+| component | state |
+|---|---|
+| `hermes-gateway` | active, enabled |
+| `helix-bridge` (8787) | active, enabled, 19 MB |
+| `helix-globe` (4173) | active, enabled, 229 MB |
+| Agent Town | 200, live from kanban.db |
+| World Monitor | 200, globe + 46 real headlines |
+| `pc` safety gate | 22 `approvals.deny` rules, verified blocking |
+| RAM | 2.5 GB free of 7.0 GB |
+
+**Nothing is failing.** Three profiles (`helix`, `pc`, `research`) delegate over
+Kanban, verified end-to-end. Five spec'd profiles do not exist yet.
+
+### Drift found — real, cheap to fix
+| profile | model | fallbacks | tools |
+|---|---|---|---|
+| `helix` (CEO) | `openrouter/free` | **0** | **18** |
+| `research` | `openrouter/free` | **0** | 12 |
+| `pc` | `stealth/space-bunny-alpha` | 2 | 8 |
+
+1. **Only `pc` has a fallback chain.** Spec §11 requires automatic failover across the
+   model priority list "so a rate-limited/deprecated model doesn't hard-fail a
+   session". `helix` and `research` are on a bare `openrouter/free` with nothing behind
+   it — the exact failure mode the spec asks to prevent. This is drift from my own
+   step-4 work: I only wired fallbacks on the profile I happened to create then.
+2. **`helix` still has 18 tools.** Spec §6.1: "The CEO profile should primarily
+   delegate, not execute — once delegation is reliable, trim its own tool list the same
+   way sub-agent tool lists are trimmed." Delegation has been reliable since the
+   step-5 verification, so this is now due.
+3. **Model policy applied unevenly.** `pc` got the spec §11 priority-1 model;
+   `helix` and `research` were never moved.
+
+### Missing, per the specs
+- **Profiles** (build spec §3): `dev`, `vision`, `comm` — none created.
+  Also `career` and `sysmon` from requirements §7.6/§7.8, though requirements §7 says
+  agent count should stay flexible and agents must justify themselves. Judged
+  lower-value than the three above; not building until asked.
+- **Voice Core** (build spec §4.2, requirements §9) — not started. Barge-in is an
+  explicit *required* feature, not optional.
+- **Phase 3 local fallback model** — Ollama + small quantized model, deferred by
+  design (online-first is correct for this hardware).
+- **No real gateway message round-trip** — still untestable, `channel_directory.json`
+  is `{"platforms": {}}`. Building `comm` is what unblocks it.
+- **2D map** in World Monitor — requirements §16.3 wants globe + map + headlines; the
+  globe app has its own map mode, not yet surfaced.
+
+### Fix 1 — model/fallback drift (spec §11)
+
+`helix` and `research` had **zero** fallbacks — the exact "rate-limited model
+hard-fails a session" failure spec §11 asks to prevent. Cause was my own drift: in
+step 4 I only wired a chain on `pc`, the profile I happened to create.
+
+Re-verified all three models against the live OpenRouter catalog first (they rotate):
+`stealth/space-bunny-alpha` available, `nvidia/nemotron-3-ultra-550b-a55b:free`
+available, `openrouter/free` available. Then applied the §11 priority order to both
+missed profiles. Confirmed via `hermes fallback list` (the tool, not the YAML):
+
+```
+Primary:   stealth/space-bunny-alpha  (via auto)
+  1. nvidia/nemotron-3-ultra-550b-a55b:free  (via openrouter)
+  2. openrouter/free                          (via openrouter)
+```
+
+### Fix 2 — trimmed the CEO (spec §6.1)
+
+§6.1 says the CEO should delegate rather than execute, and to trim its tool list "the
+same way sub-agent tool lists are trimmed" once delegation is reliable. It had been
+reliable since step 5, so this was due: **18 tools → 8**
+(`clarify, delegation, file, kanban, memory, skills, todo, web`). No terminal, no
+computer-use, no code execution — the CEO orchestrates, sub-agents execute.
+
+**Trim verified not to break it** — a trim that crippled the orchestrator would be
+worse than the drift it fixed. Two checks: a research task completed normally, and
+the CEO itself created and delegated a fresh Kanban task (`t_d3fb23e1`, replied
+`CEO_TRIM_OK`).
+
+### Created `dev`, `vision`, `comm` (build spec §3)
+
+All three cloned, key present in each `.env` (perm 600), model + fallbacks inherited —
+which only worked because Fix 1 landed first.
+
+| profile | tools | SOUL focus |
+|---|---|---|
+| `dev` | 8 — incl. `terminal`, `code_execution`, `browser` | drive OpenCode via the bundled skill; never claim a file exists without checking |
+| `vision` | 7 — incl. `vision`, `web` | describe only what is actually visible; label inference as inference |
+| `comm` | 6 | draft before sending; never invent content on the human's behalf; no secrets on channels |
+
+**Gotcha worth remembering:** `--clone` copies the *current* source toolset, so all
+three inherited the CEO's brand-new 8-tool trim. `dev` came out with no `terminal`
+and `vision` with no `vision` tool — I only caught it by printing the resulting
+toolsets instead of trusting the "Disabled:" success lines. Enabled explicitly after.
+
+**Smoke-tested all three through real Kanban dispatch**, then checked the claims
+rather than the summaries:
+- `dev` — reported HEAD `0bf1c77`, 5 commits on main. Re-ran `git rev-parse` and
+  `git rev-list --count` myself: exact match.
+- `vision` — answered and flagged honestly that it had no image input.
+- `comm` — drafted, and did **not** send, per its SOUL.
+
+### Applied the `pc` lesson to `dev`
+
+The `dev` SOUL forbids destructive git, but SOUL prose is not enforcement — proven
+the hard way with `pc`. Gave `dev` an `approvals.deny` list (15 rules) and tested it
+both ways:
+
+```
+deny:  git push --force · git reset --hard · git clean -fd · rm -rf · npm publish   (5/5 blocked)
+allow: git status · npm test · git log · python3 -m pytest · rm build/app.js       (5/5 allowed)
+```
+
+### UI now reflects every profile
+Bridge `PROFILES` extended to all six; the Agent Town page no longer hardcodes a desk
+list — it renders whatever the bridge reports, so the next profile added needs no UI
+edit. Verified: 6 desks render, and an in-page poller caught a real task driving
+`dev=idle → working → idle`. Result checked: `t_081ddaf9` reported
+`2026-09-29T20:05:43Z` against a real clock of `20:06:41Z`.
+
+### Six agents live
+```
+helix (CEO)  research  pc  dev  vision  comm     all on stealth/space-bunny-alpha + 2 fallbacks
+```

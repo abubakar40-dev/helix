@@ -69,14 +69,16 @@
   #log{flex:1;overflow-y:auto;border-top:1px solid var(--line);padding:10px 16px;font-size:11.5px}
   .l{color:var(--dim);padding:2px 0;border-bottom:1px solid #1a212b}
   .l b{color:var(--accent);font-weight:500}
-  .warnbox{background:rgba(210,153,34,.1);border:1px solid rgba(210,153,34,.4);
-           color:var(--warn);border-radius:8px;padding:10px;font-size:11px;margin-top:10px;line-height:1.55}
+  .okbox{background:rgba(63,185,80,.08);border:1px solid rgba(63,185,80,.35);
+         color:var(--live);border-radius:8px;padding:10px;font-size:11px;margin-top:10px;line-height:1.55}
+  select{width:100%;padding:8px;border-radius:8px;border:1px solid var(--line);
+         background:#1a212b;color:var(--text);font:inherit;font-size:12px}
 </style>
 </head>
 <body>
 <header>
   <h1>Helix · Voice Core</h1>
-  <span class="sub">orb: <b>reused from the old Jarvis</b> · barge-in live · STT: browser Web&nbsp;Speech</span>
+  <span class="sub">orb: <b>reused from the old Jarvis</b> · STT: <b>local whisper.cpp</b> · barge-in live</span>
   <span id="state" data-s="IDLE">IDLE</span>
 </header>
 
@@ -93,12 +95,20 @@
 
   <aside>
     <div class="pad">
-      <button id="toggle">Start</button>
-      <div class="hint">While Helix is speaking, <b>just talk</b> — it stops mid-sentence and
-        listens to you instead. That is barge-in, and it is the thing the old Jarvis could not do.</div>
-      <div class="warnbox" id="privacy">⚠ Chrome's Web Speech API sends microphone audio to
-        <b>Google</b> for recognition. Requirements §5.3 says keep data away from Google.
-        Swap in a local backend (kesha-voice-kit / Vosk) before using this for anything private.</div>
+      <button id="toggle">Start listening</button>
+      <div class="hint">Press to start, press again to stop and transcribe. While Helix is
+        speaking, <b>press to interrupt</b> — it cuts off mid-sentence and takes your new
+        words instead. That is barge-in.</div>
+      <div class="row">
+        <select id="lang">
+          <option value="">Auto-detect (mixed)</option>
+          <option value="ur">Urdu</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+      <div class="okbox" id="privacy">🔒 Transcribed <b>locally</b> by whisper.cpp
+        (<span id="model">ggml-base</span>) — audio never leaves this machine. No Google,
+        no cloud STT.</div>
     </div>
     <div class="pad" style="border-top:1px solid var(--line);padding-top:14px">
       <h2>Heard</h2>
@@ -118,7 +128,7 @@ import { createOrbScene } from "./orbScene.js";
 
 const $ = s => document.querySelector(s);
 const stage = $("#stage"), links = $("#links"), logEl = $("#log");
-let orb = null, running = false, recog = null, speaking = false, lastFinal = "";
+let orb = null, speaking = false, lastFinal = "";
 
 // ── orb + node graph ────────────────────────────────────────────────────────
 try {
@@ -155,6 +165,60 @@ fetch("/cortex").then(r => r.ok ? r.json() : null).then(c => {
   }
 }).catch(() => {});
 
+// ── local STT: MediaRecorder -> bridge /stt -> whisper.cpp ─────────────────
+// Web Speech was removed on purpose: Chrome sends mic audio to Google, which
+// s5.3 forbids. Audio now goes to localhost and is transcribed by whisper.cpp.
+const V = { HIDDEN: "X-Helix-Voice" };
+let rec = null, chunks = [], listening = false;
+
+async function transcribe(blob) {
+  setState("THINKING");
+  $("#interim").textContent = "transcribing locally…";
+  const lang = $("#lang").value;
+  try {
+    const r = await fetch("/stt" + (lang ? "?lang=" + lang : ""), {
+      method: "POST", headers: { [V.HIDDEN]: "1" }, body: blob });
+    const d = await r.json();
+    if (!d.ok) { setState("ERROR"); log("stt: " + d.error, "err"); return; }
+    const t = (d.text || "").trim();
+    if (!t) { setState(listening ? "LISTENING" : "IDLE"); $("#interim").textContent = "heard nothing"; return; }
+    lastFinal = t;
+    $("#final").textContent = t;
+    $("#interim").textContent = `local whisper.cpp · ${d.lang} · ${d.ms}ms`;
+    $("#send").disabled = false;
+    setState("WORKING");
+    log(`heard: "${t}"`, "🎙");
+  } catch (e) { setState("ERROR"); log("stt unreachable: " + e.message, "err"); }
+}
+
+async function start() {
+  if (rec) { rec.stop(); return; }              // second press = stop & transcribe
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia(
+      { audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    chunks = [];
+    rec = new MediaRecorder(stream);
+    rec.ondataavailable = e => chunks.push(e.data);
+    rec.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      rec = null; listening = false;
+      $("#toggle").textContent = "Start listening";
+      $("#toggle").classList.remove("live");
+      await transcribe(new Blob(chunks, { type: chunks[0]?.type || "audio/webm" }));
+    };
+    rec.start();
+    listening = true;
+    setState(speaking ? "SPEAKING" : "LISTENING");
+    $("#toggle").textContent = "Stop & transcribe";
+    $("#toggle").classList.add("live");
+    $("#interim").textContent = "recording…";
+    log("mic live — press again to stop");
+  } catch (e) {
+    rec = null; listening = false; setState("ERROR");
+    log("mic: " + e.message, "err");
+  }
+}
+
 // ── state + log ─────────────────────────────────────────────────────────────
 function setState(s) { $("#state").textContent = s; $("#state").dataset.s = s; }
 function log(msg, kind = "") {
@@ -171,65 +235,27 @@ function speak(text) {
   const u = new SpeechSynthesisUtterance(text);
   u.rate = 1.02; u.pitch = 1;
   speaking = true; setState("SPEAKING");
-  u.onend = u.onerror = () => { speaking = false; setState(running ? "LISTENING" : "IDLE"); };
+  u.onend = u.onerror = () => { speaking = false; setState(rec ? "IDLE" : "IDLE"); };
   speechSynthesis.speak(u);
 }
 
-/** The barge-in. Any detected speech cancels playback immediately. */
+/** The barge-in. Stopping the recorder cancels playback immediately. */
 function bargeIn(what) {
   if (!speaking) return false;
   speechSynthesis.cancel();          // stop mid-word
   speaking = false;
-  log(`barge-in — cut off by: "${what}"`, "⚡");
-  setState("LISTENING");
+  log(`barge-in — cut off${what ? ` by "${what}"` : ""}`, "⚡");
+  setState(rec ? "LISTENING" : "IDLE");
   return true;
 }
 
-// ── STT ─────────────────────────────────────────────────────────────────────
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-function start() {
-  if (!SR) { setState("ERROR"); log("no Web Speech API in this browser", "err"); return; }
-  recog = new SR();
-  recog.continuous = true;
-  recog.interimResults = true;
-  recog.lang = navigator.language || "en-US";
-
-  recog.onresult = e => {
-    let interim = "";
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const t = e.results[i][0].transcript;
-      if (e.results[i].isFinal) {
-        lastFinal = t.trim();
-        $("#final").textContent = lastFinal;
-        $("#send").disabled = !lastFinal;
-        if (speaking && lastFinal) bargeIn(lastFinal);
-      } else interim += t;
-    }
-    $("#interim").textContent = interim;
-  };
-  recog.onerror = e => {
-    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-      setState("ERROR"); log("mic permission denied", "err"); stop();
-    } else if (e.error === "no-speech") { /* normal, keep going */ }
-    else log("speech error: " + e.error, "warn");
-  };
-  recog.onend = () => { if (running) { try { recog.start(); } catch {} } };  // continuous
-  try { recog.start(); running = true; setState("LISTENING"); log("listening (lang " + recog.lang + ")"); }
-  catch (e) { setState("ERROR"); log("could not start mic: " + e.message, "err"); }
-}
-function stop() {
-  running = false;
-  if (recog) { try { recog.stop(); } catch {} }
-  speechSynthesis.cancel(); speaking = false;
-  setState("IDLE"); log("stopped");
-}
-
+// Pressing the button while Helix is speaking is the barge-in gesture:
+// it cuts the audio off and starts recording the new request immediately.
 $("#toggle").onclick = () => {
-  running ? stop() : start();
-  $("#toggle").textContent = running ? "Stop" : "Start";
-  $("#toggle").classList.toggle("live", running);
+  if (speaking) bargeIn("button press");
+  start();
 };
-$("#speak").onclick = () => speak("Helix voice core online. Say something and I will stop talking and listen.");
+$("#speak").onclick = () => speak("Helix voice core online. Press the button at any time and I will stop talking and listen instead.");
 
 $("#send").onclick = async () => {
   if (!lastFinal) return;

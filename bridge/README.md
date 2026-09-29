@@ -27,6 +27,7 @@ To run it by hand instead (don't — the unit will fight you for port 8787):
 | `GET /events` | SSE stream, pushes a snapshot whenever it changes (polls the DB every 1s) |
 | `GET /cortex` | counts behind the Voice Core nodes (memory/skills/soul/settings) |
 | `POST /say` | **write path** — creates a Kanban task for the CEO from a transcript |
+| `POST /stt?lang=` | **write path** — local speech-to-text via whisper.cpp (empty lang = auto) |
 
 ## Design notes
 
@@ -36,9 +37,10 @@ To run it by hand instead (don't — the unit will fight you for port 8787):
 - **SSE, not WebSocket.** The UI only receives pushed state, and `EventSource` is
   built into every browser. A WebSocket would add a dependency and a handshake for
   the same result.
-- **`/say` is the only write endpoint.** Everything else reads. It requires the
-  `X-Helix-Voice: 1` header so a random web page cannot make a browser POST to
-  localhost; the preflight is never answered, so the request is never sent.
+- **`/say` and `/stt` are the only write endpoints.** Everything else reads. Both
+  require the `X-Helix-Voice: 1` header so a random web page cannot make a browser
+  POST to localhost; the preflight is never answered, so the request is never sent.
+  `/stt` also validates `lang` against `[a-z]{2}(-[a-z]+)?`.
 - **Bound to `127.0.0.1` explicitly.** Verified: reachable on loopback (200), refused
   on the LAN address `192.168.100.97:8787`. Never widen this — Hermes's own routes
   assume no auth.

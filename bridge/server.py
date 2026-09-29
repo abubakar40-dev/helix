@@ -16,11 +16,14 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
@@ -210,6 +213,57 @@ def say(text):
     return {"ok": True, "task": m.group(1) if m else out.stdout.strip()[:80]}
 
 
+STT_DIR = os.path.expanduser("~/.local/share/helix-stt")
+WHISPER = os.path.join(STT_DIR, "whisper-cli")
+WHISPER_MODEL = os.path.join(STT_DIR, "models", "ggml-base.bin")
+MAX_AUDIO = 12 * 1024 * 1024  # ~12MB, roughly 3 minutes of opus
+
+
+def stt(audio: bytes, lang: str = ""):
+    """Transcribe locally with whisper.cpp. No audio leaves the machine.
+
+    base model: measured 1.64x realtime, 295MB RSS on this box. ggml-tiny was
+    tried first and is not usable - it mis-detected Urdu audio as English.
+    """
+    if not (os.path.isfile(WHISPER) and os.path.isfile(WHISPER_MODEL)):
+        return {"ok": False, "error": "whisper.cpp not installed"}
+    if not audio:
+        return {"ok": False, "error": "no audio"}
+    # lang is a whisper code; '' means auto-detect, which is what handles
+    # mixed English/Urdu better than forcing one.
+    if lang and not re.fullmatch(r"[a-z]{2}(-[a-z]+)?", lang or ""):
+        return {"ok": False, "error": "bad lang"}
+
+    tmp = tempfile.mkdtemp(prefix="helix-stt-")
+    src, wav = os.path.join(tmp, "in"), os.path.join(tmp, "out.wav")
+    try:
+        with open(src, "wb") as f:
+            f.write(audio)
+        # ffmpeg probes the content, so the extension does not matter. whisper
+        # wants 16k mono PCM.
+        p = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", src,
+             "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav],
+            capture_output=True, timeout=60)
+        if p.returncode != 0 or not os.path.isfile(wav):
+            return {"ok": False, "error": "ffmpeg: " + p.stderr.decode()[:160]}
+
+        cmd = [WHISPER, "-m", WHISPER_MODEL, "-nt", "-f", wav]
+        if lang:
+            cmd[1:1] = ["-l", lang]
+        t0 = time.time()
+        w = subprocess.run(cmd, capture_output=True, timeout=180)
+        if w.returncode != 0:
+            return {"ok": False, "error": w.stderr.decode()[:160]}
+        text = " ".join(l.strip() for l in w.stdout.decode(errors="replace").splitlines() if l.strip())
+        return {"ok": True, "text": text, "lang": lang or "auto",
+                "ms": int((time.time() - t0) * 1000)}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "whisper timed out"}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _selftest():
     """Check the status-derivation rules against a throwaway DB. No Hermes involved."""
     import tempfile
@@ -285,18 +339,27 @@ class Handler(BaseHTTPRequestHandler):
         # here. Any page in any browser can POST to 127.0.0.1, so requiring a custom
         # header forces a CORS preflight that we never answer — a foreign page then
         # cannot make the browser send it.
-        if self.path.split("?", 1)[0] != "/say":
+        if self.path.split("?", 1)[0] not in ("/say", "/stt"):
             return self.send_error(404)
         if self.headers.get("X-Helix-Voice") != "1":
             return self._send_json({"ok": False, "error": "missing X-Helix-Voice header"}, 403)
         n = int(self.headers.get("Content-Length") or 0)
         if n > 64_000:
             return self._send_json({"ok": False, "error": "body too large"}, 413)
+        lang = ""
+        if "?" in self.path:
+            q = urllib.parse.parse_qs(self.path.split("?", 1)[1])
+            lang = (q.get("lang") or [""])[0]
+        body = self.rfile.read(n) if n else b""
         try:
-            payload = json.loads(self.rfile.read(n) or b"{}")
-        except ValueError:
-            return self._send_json({"ok": False, "error": "bad json"}, 400)
-        try:
+            if self.path.split("?", 1)[0] == "/stt":
+                if n > MAX_AUDIO:
+                    return self._send_json({"ok": False, "error": "audio too large"}, 413)
+                return self._send_json(stt(body, lang))
+            try:
+                payload = json.loads(body or b"{}")
+            except ValueError:
+                return self._send_json({"ok": False, "error": "bad json"}, 400)
             return self._send_json(say(payload.get("text")))
         except subprocess.TimeoutExpired:
             return self._send_json({"ok": False, "error": "hermes timed out"}, 504)

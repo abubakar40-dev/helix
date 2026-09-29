@@ -396,16 +396,61 @@ Notes carried forward:
   `bridge/README.md` as a deliberate deferral, not an oversight — the gateway already
   survives logout via linger and the bridge can be wrapped the same way when wanted.
 
-#### ⚠ Still open — carry into Phase 5/7: gateway has no API key
-`hermes-gateway` (systemd) does **not** have `OPENROUTER_API_KEY` in its environment —
-it lives in `~/.bashrc`, which systemd never sources. Every gateway-mediated turn
-(WhatsApp, Telegram, any channel the `comm` profile will add) will fail with
-`No API key found for provider 'openrouter'`, exactly like the Kanban workers did in
-step 2. The kanban *workers* are fixed (each profile has the key in its own `.env`);
-the **gateway process itself is not**. Fix is the same shape: put the key where
-systemd can see it (a systemd `EnvironmentFile=` or `~/.config/environment.d/`), then
-restart the gateway and confirm with a real message round-trip. Not done in this
-session because it means editing the user's service definition.
+## 2026-09-30
 
-Also still deferred per spec §5: Easy Diffusion, Obsidian, link-paste downloader, the
-§17 skills shortlist, Voice Core, World Monitor.
+### Housekeeping — archived stale debug tasks off the kanban board
+
+`research` was permanently reading **blocked** in Agent Town because four crashed
+smoke-test tasks were still sitting on the board from the pre-fix debugging.
+
+**The list I was given had three; there were four.** Archiving only the three named
+(`t_b7ca0dad`, `t_5296608b`, `t_f9172fab`) left `t_bd6b0d88` blocked, and the desk
+still read `blocked` — verified in the rendered DOM, not assumed. That fourth task is
+exactly the category described: the crashed named-profile smoke test from step 2. So
+the third one was archived too, which is what actually reached the goal.
+
+**Archive is not destructive — checked before relying on it.** `hermes kanban archive`
+only sets `status='archived'`. Confirmed the row, title, body, events and workspace
+reference all survive: `hermes kanban show t_b7ca0dad` still returns everything. There
+is no `unarchive` subcommand, but this is a one-field status change, fully reversible.
+The genuinely destructive flag is `--rm` (permanently deletes archived tasks) — not
+used. Noted because "no unarchive" looked one-way at first glance and that was worth
+knowing before running it four times.
+
+**Verification.** `/state` and the rendered DOM both show all three profiles `idle`.
+But the tab was opened *after* the change, so that is only a before/after — not proof
+the desk is live rather than parked. So: dispatched a real task to `research` and
+watched the in-page poller (300ms).
+
+```
+19:07:10  research=idle | no open task            (post-archive baseline)
+19:07:42  research=working | t_e03e656a          (during the real task)
+19:07:57  research=idle | no open task            (task done — and now lands on IDLE)
+```
+
+Correlated against `task_events` again: `claimed` 19:07:41Z → UI working 19:07:42;
+`completed` 19:07:56Z → UI idle 19:07:57. **+1s both times, same as step 5.**
+
+This is the check that actually matters: the desk now returns to **idle** rather than
+snapping back to `blocked`, which is what the stale tasks were causing. The earlier
+"blocked" wart noted in step 5 is resolved by cleaning the board, not by changing the
+status rule — so the rule stays honest and un-fudged.
+
+Computed style on the desk's status bar also checked: `rgb(75, 85, 99)` = the `--idle`
+grey, not the `--working` green.
+
+Liveness task result verified rather than trusted: `t_e03e656a` replied `ALIVE` as
+instructed.
+
+### Still open (unchanged)
+- ⚠ **`hermes-gateway` has no `OPENROUTER_API_KEY` in its environment.** Lives only in
+  `~/.bashrc`, which systemd never sources. Every gateway-mediated turn (WhatsApp,
+  Telegram, whatever `comm` adds) will fail `No API key found for provider
+  'openrouter'` — exactly what killed the Kanban workers in step 2. Workers are fixed
+  (each profile has the key in its own `.env`); the **gateway process itself is not**.
+  Fix: put the key where systemd can read it (`EnvironmentFile=` in the unit, or
+  `~/.config/environment.d/`), restart the gateway, confirm with a real message
+  round-trip. Deliberately not done — it means editing the service definition.
+- Bridge is not a systemd service; dies with the shell.
+- Per spec §5, still deferred: Easy Diffusion, Obsidian, link-paste downloader, the
+  §17 skills shortlist, Voice Core, World Monitor.

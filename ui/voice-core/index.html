@@ -167,7 +167,6 @@ addEventListener("resize", drawLinks);
 setTimeout(drawLinks, 60);
 
 // Counts come from the bridge, so the graph shows real Helix state.
-fetch("/state").then(r => r.json()).then(() => {}).catch(() => {});
 fetch("/cortex").then(r => r.ok ? r.json() : null).then(c => {
   if (!c) return;
   for (const n of document.querySelectorAll(".node")) {
@@ -181,7 +180,7 @@ fetch("/cortex").then(r => r.ok ? r.json() : null).then(c => {
 // ── local STT: MediaRecorder -> bridge /stt -> whisper.cpp ─────────────────
 // Web Speech was removed on purpose: Chrome sends mic audio to Google, which
 // s5.3 forbids. Audio now goes to localhost and is transcribed by whisper.cpp.
-const V = { HIDDEN: "X-Helix-Voice" };
+
 
 async function transcribe(blob) {
   setState("THINKING");
@@ -189,7 +188,7 @@ async function transcribe(blob) {
   const lang = $("#lang").value;
   try {
     const r = await fetch("/stt" + (lang ? "?lang=" + lang : ""), {
-      method: "POST", headers: { [V.HIDDEN]: "1" }, body: blob });
+      method: "POST", headers: { "X-Helix-Voice": "1" }, body: blob });
     const d = await r.json();
     if (!d.ok) { setState("ERROR"); log("stt: " + d.error, "err"); return; }
     const t = (d.text || "").trim();

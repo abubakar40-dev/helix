@@ -21,7 +21,6 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import urllib.parse
 import urllib.request
@@ -64,9 +63,9 @@ PROFILES = [
 ]
 
 # A task in one of these states means the agent is busy right now.
-BUSY_STATUSES = ("running",)
+BUSY = "running"
 # Unfinished-but-not-busy. A profile with any of these and nothing running is blocked.
-STUCK_STATUSES = ("blocked",)
+STUCK = "blocked"
 
 
 def _connect():
@@ -77,17 +76,15 @@ def _connect():
 def _profile_state(conn, pid):
     """(status, current_task) for one profile id."""
     busy = conn.execute(
-        "SELECT id,title FROM tasks WHERE assignee=? AND status IN (%s) "
-        "ORDER BY started_at DESC LIMIT 1" % ",".join("?" * len(BUSY_STATUSES)),
-        (pid, *BUSY_STATUSES),
+        "SELECT id,title FROM tasks WHERE assignee=? AND status=? "
+        "ORDER BY started_at DESC LIMIT 1", (pid, BUSY)
     ).fetchone()
     if busy:
         return "working", {"id": busy[0], "title": busy[1]}
 
     stuck = conn.execute(
-        "SELECT id,title FROM tasks WHERE assignee=? AND status IN (%s) "
-        "ORDER BY created_at DESC LIMIT 1" % ",".join("?" * len(STUCK_STATUSES)),
-        (pid, *STUCK_STATUSES),
+        "SELECT id,title FROM tasks WHERE assignee=? AND status=? "
+        "ORDER BY created_at DESC LIMIT 1", (pid, STUCK)
     ).fetchone()
     if stuck:
         return "blocked", {"id": stuck[0], "title": stuck[1]}
@@ -158,7 +155,7 @@ def headlines():
     return data
 
 
-def _count(path, pattern="*"):
+def _count(path, pattern="*.md"):
     try:
         return len([p for p in os.listdir(path)
                     if fnmatch.fnmatch(os.path.basename(p), pattern)])
@@ -179,14 +176,13 @@ def cortex():
     return {
         # Counted across every profile, not just the default one, or the node
         # reads a misleading 0 when the per-profile dirs are where memory lives.
-        "memory": sum(_count(os.path.join(h, "memories"), "*.md") for h in profiles),
+        "memory": sum(_count(os.path.join(h, "memories")) for h in profiles),
         "skills": sum(1 for p in os.listdir(os.path.join(HERMES_HOME, "skills"))
                       if os.path.isdir(os.path.join(HERMES_HOME, "skills", p))),
         "soul": sum(1 for h in profiles
                     if os.path.isfile(os.path.join(h, "SOUL.md"))),
         "settings": sum(1 for h in profiles
                         if os.path.isfile(os.path.join(h, "config.yaml"))),
-        "profiles": len(profiles),
     }
 
 
@@ -217,10 +213,14 @@ STT_DIR = os.path.expanduser("~/.local/share/helix-stt")
 WHISPER = os.path.join(STT_DIR, "whisper-cli")
 WHISPER_MODEL = os.path.join(STT_DIR, "models", "ggml-base.bin")
 MAX_AUDIO = 12 * 1024 * 1024  # ~12MB, roughly 3 minutes of opus
-# 2 threads, not nproc. Measured on this 4-core box while the desktop app is running
-# (load ~9): -t4 = 100s for 30s of audio, -t3 = 28s, -t2 = 21.5s, -t1 = 34s.
-# Oversubscribing the cores makes it ~5x SLOWER. ponytail: revisit only if the box
-# stops being busy, and re-measure before assuming.
+# ponytail: 2 threads, NOT nproc, and that is deliberate. This box is 4 cores sitting
+# at load ~9 (desktop app). Same 30s clip, measured through /stt on this machine:
+#     -t 4 (whisper's default) -> 100.0s   0.30x realtime
+#     -t 3                      ->  28.1s   1.07x
+#     -t 2                      ->  21.5s   1.40x   <-- this
+#     -t 1                      ->  34.4s   0.87x
+# Oversubscribing the cores is ~5x SLOWER. It reads like a bug; it is not. Re-measure
+# before changing it, and only if the box stops being busy.
 STT_THREADS = "2"
 # ponytail: 2 threads, NOT nproc, and that is deliberate. This box is 4 cores sitting
 # at load ~9 (desktop app). Same 30s clip, measured through /stt on this machine:
@@ -293,26 +293,43 @@ TTS_VOICES = {
 }
 
 
+def _render(label, build, ext, mime, stdin=None, env=None, timeout=60):
+    """Run a TTS binary to a temp file and return (bytes, mime, error).
+
+    `build(out_path)` returns the argv, so the path the binary writes to and the
+    path this function checks are always the same one. One helper instead of three
+    near-identical functions: temp file, subprocess, "did it really produce audio"
+    guard, read, unlink.
+    """
+    out = tempfile.mktemp(suffix=ext)
+    try:
+        p = subprocess.run(build(out), input=stdin, capture_output=True,
+                           text=bool(stdin), timeout=timeout, env=env)
+        if p.returncode != 0 or not os.path.isfile(out) or os.path.getsize(out) < 512:
+            return None, mime, f"{label}: " + (p.stderr.decode(errors="replace").strip()[-120:] or "no audio")
+        with open(out, "rb") as f:
+            return f.read(), mime, None
+    except subprocess.TimeoutExpired:
+        return None, mime, f"{label} timed out"
+    except OSError as e:
+        return None, mime, f"{label}: {e}"
+    finally:
+        if os.path.exists(out):
+            os.unlink(out)
+
+
+def _voice(engine, lang):
+    return TTS_VOICES[engine].get(lang) or TTS_VOICES[engine]["en"]
+
+
 def _tts_edge(text, lang):
     """Online primary: Microsoft's free Edge read-aloud endpoint. No key needed."""
     if not os.path.isfile(EDGE_TTS):
         return None, None, "edge-tts not installed"
-    out = tempfile.mktemp(suffix=".mp3")
-    try:
-        p = subprocess.run([EDGE_TTS, "--voice", TTS_VOICES["edge"].get(lang) or TTS_VOICES["edge"]["en"],
-                            "--text", text, "--write-media", out],
-                           capture_output=True, timeout=45)
-        if p.returncode != 0 or not os.path.isfile(out) or os.path.getsize(out) < 512:
-            return None, None, "edge-tts: " + (p.stderr.decode(errors="replace").strip()[-120:] or "no audio")
-        with open(out, "rb") as f:
-            return f.read(), "audio/mpeg", None
-    except subprocess.TimeoutExpired:
-        return None, None, "edge-tts timed out"
-    except OSError as e:
-        return None, None, f"edge-tts: {e}"
-    finally:
-        if os.path.exists(out):
-            os.unlink(out)
+    return _render("edge-tts",
+                   lambda o: [EDGE_TTS, "--voice", _voice("edge", lang), "--text", text,
+                              "--write-media", o],
+                   ".mp3", "audio/mpeg", timeout=45)
 
 
 def _tts_piper(text, lang):
@@ -321,37 +338,17 @@ def _tts_piper(text, lang):
         return None, None, "piper not installed"
     if not TTS_VOICES["piper"].get(lang):
         return None, None, f"no piper voice for '{lang}'"
-    env = dict(os.environ, LD_LIBRARY_PATH=PIPER_LIB)
-    out = tempfile.mktemp(suffix=".wav")
-    try:
-        p = subprocess.run([PIPER, "--model", PIPER_MODEL, "--output_file", out],
-                           input=text, capture_output=True, text=True, timeout=90, env=env)
-        if p.returncode != 0 or not os.path.isfile(out) or os.path.getsize(out) < 512:
-            return None, None, "piper: " + p.stderr.decode(errors="replace").strip()[-120:]
-        with open(out, "rb") as f:
-            return f.read(), "audio/wav", None
-    except subprocess.TimeoutExpired:
-        return None, None, "piper timed out"
-    finally:
-        if os.path.exists(out):
-            os.unlink(out)
+    return _render("piper",
+                   lambda o: [PIPER, "--model", PIPER_MODEL, "--output_file", o],
+                   ".wav", "audio/wav", stdin=text,
+                   env=dict(os.environ, LD_LIBRARY_PATH=PIPER_LIB), timeout=90)
 
 
 def _tts_espeak(text, lang):
     """Last resort, always available, robotic. Never let the panel go mute."""
-    out = tempfile.mktemp(suffix=".wav")
-    try:
-        p = subprocess.run([ESPEAK, "-v", TTS_VOICES["espeak"].get(lang) or "en-gb",
-                            "-s", "165", "-w", out, text], capture_output=True, timeout=60)
-        if p.returncode != 0 or not os.path.isfile(out) or os.path.getsize(out) < 512:
-            return None, None, "espeak failed"
-        with open(out, "rb") as f:
-            return f.read(), "audio/wav", None
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return None, None, f"espeak: {e}"
-    finally:
-        if os.path.exists(out):
-            os.unlink(out)
+    return _render("espeak",
+                   lambda o: [ESPEAK, "-v", _voice("espeak", lang), "-s", "165", "-w", o, text],
+                   ".wav", "audio/wav", timeout=60)
 
 
 def tts(text, lang="en", engine="auto"):
@@ -391,8 +388,6 @@ def tts(text, lang="en", engine="auto"):
 
 def _selftest():
     """Check the status-derivation rules against a throwaway DB. No Hermes involved."""
-    import tempfile
-
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     try:

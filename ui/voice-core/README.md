@@ -16,50 +16,23 @@ barge-in (interrupt Helix mid-sentence).
 | TTS online-first | **verified** — edge-tts when online |
 | TTS offline fallback | **VERIFIED with no internet** — Piper, see below |
 
-## Barge-in — how it was actually proven
+## Barge-in
 
-The browser's `speechSynthesis` was **removed** because it reports **zero voices** on
-this machine: its utterances ended instantly, so there was never anything to interrupt.
-An earlier note in this file blamed "no audio device" — that was wrong. The hardware is
-fine (ALC3246 analog + HDMI, pipewire running); Chrome simply has no TTS engine. TTS is
-now server-side **espeak-ng**, played through an `<audio>` element, which also gives a
-built-in Urdu voice.
+Interrupt = `audioEl.pause()` mid-playback on a server-side TTS `<audio>` element.
+Verified on both engines (`edge-tts` cut at 1.66s of 9.24s, `piper` at 1.39s of 9.30s).
+The full evidence chain, the misdiagnoses and the honest limits are in
+`docs/PROGRESS.md` — read it there rather than here, it is the canonical record.
 
-Interrupt = `audioEl.pause()` mid-playback. Proven by, in order:
-
-1. **Playback was real.** `audioEl.currentTime` advanced during speech, and a pipewire
-   sink-input appeared — audio was genuinely being produced.
-2. **The cut lands mid-sentence.** Repeated runs cut at **1.04s, 1.12s, 1.41s, 1.90s,
-   2.11s and 2.58s out of a 9.27s utterance.**
-3. **It was cut, not played to completion.** After cutting at 1.04s and then waiting
-   **11 seconds** — past the 7.8s that remained — `onended` never fired and the state
-   never went to `IDLE`. Playback stopped at the interrupt.
-
-**Limit, stated honestly:** no sample-level proof that sound stopped. `pactl`'s `cork`
-flag stayed `no` and the sink-input stayed open after `pause()` (a paused element keeps
-its stream node in Chrome/pipewire), and there is no `parec` tap available to measure the
-output waveform. The evidence above is behavioural, not acoustic.
-
-There is **no microphone in this environment**, so "talk over Helix" could not be
-exercised end to end. The interrupt half is proven; the capture half is not.
-
-Re-verified after the TTS engine change, on **both** engines:
-`edge-tts` cut at **1.66s of 9.24s**, `piper` cut at **1.39s of 9.30s**.
-
-A false alarm worth recording: an early run showed no barge-in at all, and the
-suspected cause was Chrome's autoplay policy blocking `play()`. Tested directly —
-`play()` succeeded both with and without a preceding `await`. The real cause was
-stale state from earlier runs in the same page. Measured before believing.
+The one thing to keep in mind: there is **no microphone in this environment**, so "talk
+over Helix" has never been exercised end to end. The interrupt half is proven; the
+capture half is not.
 
 ## Why not `hermes-live-voice`
 
-The spec says to check it first. It is the right tool for barge-in and it is
-unusable here — three independent blockers, recorded so this is not re-litigated:
-
-- local provider is **Apple Silicon only** (this is x86_64) and needs **≥12 GB RAM**
-  (this box has 6.9 GB)
-- OpenAI Realtime is **paid** (violates the free-only rule)
-- Gemini Live routes audio to **Google**, which §5.3 forbids
+Three independent blockers, so this is not re-litigated: local provider is **Apple
+Silicon only** (this is x86_64) and needs **≥12 GB RAM** (this box has 6.9 GB);
+OpenAI Realtime is **paid**; Gemini Live routes audio to **Google**, which §5.3
+forbids. Details in `docs/PROGRESS.md`.
 
 ## Privacy
 
@@ -87,21 +60,22 @@ old Jarvis archive is a 2021 UMD build whose addons cannot satisfy the ES import
 `orbScene.js` uses. To run fully offline, vendor three + `examples/jsm/` locally and
 repoint the two import-map entries.
 
-## orbScene.js is transpiled, not hand-edited
+## orbScene.js is generated, not hand-edited
 
-Source: `~/jarvis-old-archive/JarvisHeadFolder/JARVIS_fixed_v2/JARVIS/homescreen background/lib/orbScene.ts`
+It is **gitignored** — build it once after cloning. Source:
+`~/jarvis-old-archive/JarvisHeadFolder/JARVIS_fixed_v2/JARVIS/homescreen background/lib/orbScene.ts`
 (858 lines). Regenerate with:
 
     ~/gods-eye-view/node_modules/.bin/esbuild "<that path>" \
       --bundle --format=esm --target=es2020 --loader:.ts=ts \
       --external:three --external:three/addons/* --outfile=orbScene.js
 
-The old archive is reference-only and is not modified.
+Takes ~10ms. The old archive is reference-only and is not modified.
 
 ## Known gaps
 - No wake word (spec §9 lists one)
-- **Barge-in still unverified** — needs real audio hardware
-- ~5s per voice command; see the latency note below
+- **No microphone in this environment**, so talk-over-Helix is untested end to end
+- ~7s per voice command; see the latency note below
 
 ---
 
@@ -120,11 +94,6 @@ English/Urdu better than forcing one).
 - **Vosk** — no Urdu model exists in its catalogue.
 
 whisper.cpp covers 99 languages including Urdu, needs no key, and is one static binary.
-
-### Privacy
-
-Both directions are local: **whisper.cpp** transcribes, **espeak-ng** speaks (with a
-built-in Urdu voice). No audio or text goes to a cloud service.
 
 ## Rebuilding whisper.cpp
 No prebuilt Linux binary is published, and cmake is not installed system-wide, so:

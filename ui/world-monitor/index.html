@@ -61,7 +61,7 @@
 
 <script>
 const feed = document.getElementById("feed");
-const err = document.getElementBoxById?.("err") || document.getElementById("err");
+const err = document.getElementById("err");
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c =>
   ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
 

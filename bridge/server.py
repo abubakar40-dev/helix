@@ -277,35 +277,116 @@ def stt(audio: bytes, lang: str = ""):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def tts(text: str, lang: str = "en-us"):
-    """Render speech locally with espeak-ng. Returns (wav_bytes, error).
+TTS_DIR = os.path.expanduser("~/.local/share/helix-tts")
+EDGE_TTS = os.path.expanduser("~/.local/share/helix-tts-venv/bin/edge-tts")
+PIPER = os.path.join(TTS_DIR, "piper", "piper")
+PIPER_LIB = os.path.join(TTS_DIR, "piper")
+PIPER_MODEL = os.path.join(TTS_DIR, "voices", "en_GB-alba-medium.onnx")
+ESPEAK = "espeak-ng"
 
-    Replaces the browser's speechSynthesis, which reports ZERO voices on this box, so
-    its utterances ended instantly and barge-in could not be exercised at all.
-    espeak-ng is already installed, is local, and has a built-in Urdu voice.
+# British voices, per engine. edge-tts ids are Microsoft's; Piper's is a Scottish
+# female. Both free, both with no API key.
+TTS_VOICES = {
+    "edge":   {"en": "en-GB-SoniaNeural", "ur": "ur-PK-UzmaNeural"},
+    "piper":  {"en": "en_GB-alba-medium",  "ur": None},          # no Urdu model
+    "espeak": {"en": "en-gb",              "ur": "ur"},
+}
+
+
+def _tts_edge(text, lang):
+    """Online primary: Microsoft's free Edge read-aloud endpoint. No key needed."""
+    if not os.path.isfile(EDGE_TTS):
+        return None, None, "edge-tts not installed"
+    out = tempfile.mktemp(suffix=".mp3")
+    try:
+        p = subprocess.run([EDGE_TTS, "--voice", TTS_VOICES["edge"].get(lang) or TTS_VOICES["edge"]["en"],
+                            "--text", text, "--write-media", out],
+                           capture_output=True, timeout=45)
+        if p.returncode != 0 or not os.path.isfile(out) or os.path.getsize(out) < 512:
+            return None, None, "edge-tts: " + (p.stderr.decode(errors="replace").strip()[-120:] or "no audio")
+        with open(out, "rb") as f:
+            return f.read(), "audio/mpeg", None
+    except subprocess.TimeoutExpired:
+        return None, None, "edge-tts timed out"
+    except OSError as e:
+        return None, None, f"edge-tts: {e}"
+    finally:
+        if os.path.exists(out):
+            os.unlink(out)
+
+
+def _tts_piper(text, lang):
+    """Offline fallback: fully local neural TTS. Measured 0.26x realtime on this box."""
+    if not (os.path.isfile(PIPER) and os.path.isfile(PIPER_MODEL)):
+        return None, None, "piper not installed"
+    if not TTS_VOICES["piper"].get(lang):
+        return None, None, f"no piper voice for '{lang}'"
+    env = dict(os.environ, LD_LIBRARY_PATH=PIPER_LIB)
+    out = tempfile.mktemp(suffix=".wav")
+    try:
+        p = subprocess.run([PIPER, "--model", PIPER_MODEL, "--output_file", out],
+                           input=text, capture_output=True, text=True, timeout=90, env=env)
+        if p.returncode != 0 or not os.path.isfile(out) or os.path.getsize(out) < 512:
+            return None, None, "piper: " + p.stderr.decode(errors="replace").strip()[-120:]
+        with open(out, "rb") as f:
+            return f.read(), "audio/wav", None
+    except subprocess.TimeoutExpired:
+        return None, None, "piper timed out"
+    finally:
+        if os.path.exists(out):
+            os.unlink(out)
+
+
+def _tts_espeak(text, lang):
+    """Last resort, always available, robotic. Never let the panel go mute."""
+    out = tempfile.mktemp(suffix=".wav")
+    try:
+        p = subprocess.run([ESPEAK, "-v", TTS_VOICES["espeak"].get(lang) or "en-gb",
+                            "-s", "165", "-w", out, text], capture_output=True, timeout=60)
+        if p.returncode != 0 or not os.path.isfile(out) or os.path.getsize(out) < 512:
+            return None, None, "espeak failed"
+        with open(out, "rb") as f:
+            return f.read(), "audio/wav", None
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return None, None, f"espeak: {e}"
+    finally:
+        if os.path.exists(out):
+            os.unlink(out)
+
+
+def tts(text, lang="en", engine="auto"):
+    """Online-first TTS with a local fallback.
+
+    Returns (audio_bytes, mime, engine_used, error). `engine` is auto|edge|piper.
+    Tried in order until one produces real audio:
+        1. edge-tts  - online, free, no key, natural quality
+        2. piper     - offline neural TTS, British voice
+        3. espeak-ng - offline, robotic, but cannot fail on a normal install
     """
     text = (text or "").strip()
     if not text:
-        return None, "empty text"
+        return None, None, None, "empty text"
     if len(text) > 2000:
-        return None, "text too long"
+        return None, None, None, "text too long"
     if not re.fullmatch(r"[a-z]{2,3}(-[a-z]{2,4})?", lang or ""):
-        return None, "bad lang"
-    tmp = tempfile.mkdtemp(prefix="helix-tts-")
-    wav = os.path.join(tmp, "out.wav")
-    try:
-        p = subprocess.run(["espeak-ng", "-v", lang, "-s", "165", "-w", wav, text],
-                           capture_output=True, timeout=60)
-        if p.returncode != 0 or not os.path.isfile(wav):
-            return None, "espeak: " + p.stderr.decode()[:120]
-        with open(wav, "rb") as f:
-            return f.read(), None
-    except FileNotFoundError:
-        return None, "espeak-ng not installed"
-    except subprocess.TimeoutExpired:
-        return None, "espeak timed out"
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        return None, None, None, "bad lang"
+    lang = lang.split("-")[0]
+
+    order = {
+        "auto":  [("edge-tts", _tts_edge), ("piper", _tts_piper), ("espeak", _tts_espeak)],
+        "edge":  [("edge-tts", _tts_edge)],
+        "piper": [("piper", _tts_piper), ("espeak", _tts_espeak)],
+    }.get(engine or "auto")
+    if not order:
+        return None, None, None, "bad engine"
+
+    tried = []
+    for name, fn in order:
+        audio, mime, err = fn(text, lang)
+        if audio:
+            return audio, mime, name, None
+        tried.append(f"{name}: {err}")
+    return None, None, None, " | ".join(tried)[:300]
 
 
 def _selftest():
@@ -406,14 +487,18 @@ class Handler(BaseHTTPRequestHandler):
                     payload = json.loads(body or b"{}")
                 except ValueError:
                     return self._send_json({"ok": False, "error": "bad json"}, 400)
-                wav, err = tts(payload.get("text"), payload.get("lang") or "en-us")
+                audio, mime, used, err = tts(payload.get("text"),
+                                              payload.get("lang") or "en",
+                                              payload.get("engine") or "auto")
                 if err:
                     return self._send_json({"ok": False, "error": err}, 400)
                 self.send_response(200)
-                self.send_header("Content-Type", "audio/wav")
-                self.send_header("Content-Length", str(len(wav)))
+                self.send_header("Content-Type", mime)
+                self.send_header("X-Helix-TTS-Engine", used)
+                self.send_header("X-Helix-TTS-Lang", payload.get("lang") or "en")
+                self.send_header("Content-Length", str(len(audio)))
                 self.end_headers()
-                self.wfile.write(wav)
+                self.wfile.write(audio)
                 return
             if is_stt:
                 return self._send_json(stt(body, lang))

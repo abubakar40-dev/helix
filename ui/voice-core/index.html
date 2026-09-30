@@ -107,13 +107,18 @@
           <option value="en">English</option>
         </select>
         <select id="ttslang">
-          <option value="en-us">Reply in English</option>
+          <option value="en">Reply in English</option>
           <option value="ur">جواب اردو میں دیں</option>
         </select>
+        <select id="ttsengine">
+          <option value="auto">Voice: auto (online first)</option>
+          <option value="edge">Force online</option>
+          <option value="piper">Force offline</option>
+        </select>
       </div>
-      <div class="okbox" id="privacy">🔒 Speech stays on this machine — recorded by
-        <b>whisper.cpp</b> (<span id="model">ggml-base</span>), spoken by
-        <b>espeak-ng</b> (incl. Urdu). Nothing goes to the cloud.</div>
+      <div class="okbox" id="privacy">🔒 Speech <b>online-first</b> (edge-tts), falling
+        back to <b>Piper</b> (fully offline) when there's no internet. Recognition stays
+        local via <b>whisper.cpp</b> (<span id="model">ggml-base</span>).</div>
     </div>
     <div class="pad" style="border-top:1px solid var(--line);padding-top:14px">
       <h2>Heard</h2>
@@ -258,12 +263,22 @@ async function speak(text) {
   try {
     const r = await fetch("/tts", { method: "POST",
       headers: { "Content-Type": "application/json", "X-Helix-Voice": "1" },
-      body: JSON.stringify({ text, lang: $("#ttslang").value }) });
+      body: JSON.stringify({ text, lang: $("#ttslang").value,
+                             engine: $("#ttsengine").value }) });
     if (!r.ok) { setState("ERROR"); log("tts failed: " + r.status, "err"); return; }
-    const url = URL.createObjectURL(await r.blob());
+    const engine = r.headers.get("X-Helix-TTS-Engine") || "?";
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
     audioEl = new Audio(url);
     audioEl.onended = () => { stopAudio(); setState("IDLE"); };
     audioEl.onerror = () => { stopAudio(); setState("ERROR"); log("audio error", "err"); };
+    // Real duration from the media element. Guessing it from byte size is wrong:
+    // MP3 and WAV have wildly different bitrates, and the number is used in the
+    // barge-in line, so it has to be honest.
+    audioEl.addEventListener("loadedmetadata", () => {
+      log(`spoke via ${engine} (${(audioEl.duration || 0).toFixed(1)}s)`,
+          engine === "edge-tts" ? "🌐" : "🔒");
+    }, { once: true });
     await audioEl.play();
     speaking = true;
   } catch (e) { setState("ERROR"); log("tts: " + e.message, "err"); }

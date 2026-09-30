@@ -932,3 +932,77 @@ Verified after the fix: `before: SPEAKING` → `settled: WARNING`, log ordering 
 
 Also: all module state in the page is declared in one block. Splitting it next to its
 users caused a duplicate-identifier `SyntaxError` three separate times.
+
+---
+
+## 2026-09-30 — TTS: online-first (edge-tts) with a local fallback (Piper)
+
+Requested as: online primary, local fallback, and the fallback **proven** to trigger
+rather than merely configured.
+
+### Installed
+| | |
+|---|---|
+| edge-tts | 7.2.8, in `~/.local/share/helix-tts-venv` (PEP 668 blocks the system pip) |
+| Piper | binary + `en_GB-alba-medium` voice in `~/.local/share/helix-tts/` (63 MB model) |
+
+Piper measured **0.26–0.30 real-time factor** (3.3–3.8x faster than real time) on this
+box. British voices used on both: `en-GB-SoniaNeural` (edge) and `en_GB-alba-medium`
+(Piper). Found, not assumed: edge-tts also ships **`ur-PK-UzmaNeural`**, a Pakistani
+Urdu voice, so Urdu is covered online too.
+
+### The chain
+`edge-tts` → `Piper` → `espeak-ng`, tried in order until one returns real audio
+(>512 bytes). espeak is a third, last-resort tier: it was the previous TTS, it is
+already installed, it has a Urdu voice, and it makes "the panel goes mute" nearly
+impossible. Responses carry `X-Helix-TTS-Engine`; the page logs which engine spoke, so
+the fallback is visible rather than assumed.
+
+### Proving the fallback — with the network genuinely removed
+Not simulated. `unshare -rn` (user + network namespace; plain `unshare -n` is not
+permitted here) gives a namespace with **no network interfaces at all** — `curl` to
+pypi returns `000`. Note a fresh netns has `lo` **down**; without `ip link set lo up`
+the loopback request itself fails and looks like a TTS bug.
+
+The **real bridge** was started inside that namespace and driven over HTTP:
+
+```
+inside netns: internet = 000
+POST /tts engine=auto  -> 200, 180896 bytes, X-Helix-TTS-Engine: piper, 4.10s wav
+```
+
+So `auto` really does fall through to Piper with no internet. And to prove Piper
+isn't being *skipped* — i.e. edge-tts is genuinely attempted and genuinely fails:
+
+```
+POST /tts engine=edge  -> 400 {"error": "edge-tts: ... Cannot connect to host
+                            speech.platform.bing.com:443 ... name resolution"}
+POST /tts engine=piper -> 200, 70304 bytes, X-Helix-TTS-Engine: piper
+```
+
+The error text is edge-tts's own, not something the bridge invented.
+
+Full matrix, every cell producing real audio:
+
+| | online | offline (netns) |
+|---|---|---|
+| en, `auto` | `edge-tts` 22 KB mp3 | `piper` 97 KB wav |
+| en, forced piper | `piper` 79 KB wav | `piper` 70 KB wav |
+| ur, `auto` | `edge-tts` 13 KB mp3 | `espeak` 65 KB wav (Piper has no Urdu model) |
+
+### Barge-in re-verified after the engine change
+A change of TTS engine is exactly the kind of thing that silently breaks the
+interrupt, so it was retested on **both**:
+
+- edge-tts: **cut at 1.66s of 9.24s**
+- piper: **cut at 1.39s of 9.30s**
+
+**A false alarm, recorded because it nearly became a wrong fix:** an early run showed
+no barge-in at all. The tempting explanation was Chrome's autoplay policy blocking
+`play()` after an `await`. Tested directly instead of believed — `play()` succeeded
+both with and without a preceding `await`. The actual cause was stale state from
+earlier runs in the same page. Changed nothing on the strength of a guess.
+
+Also fixed: the panel logged a made-up duration (`blob.size / 32000` — a WAV formula
+applied to MP3, reporting 1.7s for 9.2s of audio). It now reads the real duration off
+the media element, which matters because that number appears in the barge-in line.

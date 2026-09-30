@@ -11,9 +11,10 @@ barge-in (interrupt Helix mid-sentence).
 | Node graph + counts | **verified** — `/cortex`, counted off the filesystem |
 | Transcript → Helix | **verified end-to-end** — `/say` → Kanban task → CEO ran it → replied `UI_PATH_OK` |
 | CSRF guard on the write paths | **verified** — with header 200, without 403 |
-| **Barge-in** | **VERIFIED for real** — see below |
-| Local/private STT | **verified** — whisper.cpp, no audio leaves the machine |
-| Local/private TTS | **verified** — espeak-ng, including Urdu |
+| **Barge-in** | **VERIFIED for real** — on both TTS engines, see below |
+| Recognition | **verified** — whisper.cpp, no audio leaves the machine |
+| TTS online-first | **verified** — edge-tts when online |
+| TTS offline fallback | **VERIFIED with no internet** — Piper, see below |
 
 ## Barge-in — how it was actually proven
 
@@ -42,6 +43,14 @@ output waveform. The evidence above is behavioural, not acoustic.
 There is **no microphone in this environment**, so "talk over Helix" could not be
 exercised end to end. The interrupt half is proven; the capture half is not.
 
+Re-verified after the TTS engine change, on **both** engines:
+`edge-tts` cut at **1.66s of 9.24s**, `piper` cut at **1.39s of 9.30s**.
+
+A false alarm worth recording: an early run showed no barge-in at all, and the
+suspected cause was Chrome's autoplay policy blocking `play()`. Tested directly —
+`play()` succeeded both with and without a preceding `await`. The real cause was
+stale state from earlier runs in the same page. Measured before believing.
+
 ## Why not `hermes-live-voice`
 
 The spec says to check it first. It is the right tool for barge-in and it is
@@ -52,11 +61,24 @@ unusable here — three independent blockers, recorded so this is not re-litigat
 - OpenAI Realtime is **paid** (violates the free-only rule)
 - Gemini Live routes audio to **Google**, which §5.3 forbids
 
-## Privacy warning, resolved
+## Privacy
 
-Previously Chrome's Web Speech API sent microphone audio to **Google** for recognition,
-which §5.3 forbids. **That is now fixed** — recognition runs locally through
-whisper.cpp via `POST /stt`. No audio leaves the machine.
+Recognition is always local: **whisper.cpp**, nothing leaves the machine.
+
+**Speaking is online-first, by request.** Text goes to Microsoft's free Edge
+read-aloud endpoint (no key, no account) and falls back to **Piper, which is fully
+offline**, the moment there is no internet. Use the "Force offline" selector to keep
+every word local regardless. Urdu offline falls to espeak-ng, since Piper has no Urdu
+model.
+
+| | online | offline |
+|---|---|---|
+| English | edge-tts `en-GB-SoniaNeural` | Piper `en_GB-alba-medium` |
+| Urdu | edge-tts `ur-PK-UzmaNeural` | espeak-ng `ur` |
+| last resort | — | espeak-ng (cannot fail on a normal install) |
+
+The response carries `X-Helix-TTS-Engine`, and the page logs which engine actually
+spoke, so the fallback is visible rather than assumed.
 
 ## The one CDN dependency
 

@@ -1511,3 +1511,77 @@ exists — to report a real break plainly instead.
 ### All nine agents are now reachable from a phone
 `helix` (CEO) over WhatsApp, delegating to `research, document, pc, dev, vision, comm,
 sysmon, career` over Kanban. The last never-exercised gateway path is closed.
+
+---
+
+## 2026-09-30 — Images in documents (§28's "useful images"), done by reuse
+
+§28 asks for documents "with useful images" and "insert and optimize relevant images".
+The §28 demo had shipped text and tables only. §5 rules out local generation (minutes
+per image on this CPU) and the cloud image models are paid, so the only admissible route
+is **permissively-licensed downloads**.
+
+### Reuse check first
+No bundled skill does this (`media/gif-search` is gifs). `image_gen` is not in either
+agent's toolset. Probed the two free no-key sources:
+
+| source | result |
+|---|---|
+| `api.openverse.org` | **200** — 177 results, licence + creator + landing URL per item |
+| `commons.wikimedia.org` | **000** — unreachable from this machine |
+
+Openverse it is, and the SOULs say so explicitly so no agent wastes turns on Wikimedia.
+
+### Proved the pipeline before writing it into an agent
+Downloaded a real CC BY 2.0 image, optimised it with Pillow, embedded it with reportlab:
+
+```
+source image        207,393 bytes  1024x768
+after optimise      134,127 bytes  (long edge 1400, JPEG q82, optimize=True)
+PDF unoptimised     260,594 bytes
+PDF optimised       169,342 bytes   (-35%)
+```
+
+**Pillow was already in the venv**, pulled in by pdfplumber — so this cost **zero new
+dependencies**. Worth noting the long edge did not shrink this particular image (1024px
+was already under the cap); the win came from re-encoding. The cap matters for the
+12-megapixel phone photos a human will actually supply.
+
+One API slip worth recording: `reportlab.platypus.Image` takes a **filename**, not an
+`ImageReader`. Passing an `ImageReader` raises `TypeError` from `os.path.splitext`.
+
+### Wired into both agents, per the §7.1/§7.2 split
+§7.1 gives research "finding images", §7.2 gives document "insert downloaded images", so
+each SOUL got the half it owns:
+
+- **`document`** — the Openverse curl, and the rules that are not optional: only
+  commercial+modification licences (`license_type` filter), mandatory attribution, no
+  remote URLs (download the bytes first), Pillow optimise before embedding, and **never
+  generate** (§5). Plus a verification step: reopen the PDF and count
+  `sum(len(p.images) for p in pdf.pages)` — a document you added images to that reports
+  zero embedded images is a failure, and a valid-but-image-less PDF would otherwise pass.
+- **`research`** — one short section: when a topic is visual, list 2-4 candidates with
+  URL, licence and creator; skip images entirely if none are useful rather than padding.
+
+### Verified on a real build, and one flaw I caught in it
+`document` produced a 4-page PDF, 284,805 bytes. Checked myself rather than trusting the
+summary:
+
+```
+page 1: 0 images   page 2: 1 image (417.6x313.2pt)   page 3: 1 image (417.6x277.3pt)   page 4: 0
+TOTAL embedded images: 2
+licence mentioned: True    credits section: True    source URLs: 6
+```
+
+Rendered page 2 and read it: a genuine photograph, correctly placed, with a caption
+carrying title, creator and licence. Images are really embedded, not decorative.
+
+**Flaw I found by looking:** it credited the raw `live.staticflickr.com/...jpg` CDN path
+instead of the source page. Not a licence violation — creator, title and licence were all
+present — but weak, because the actual terms live on the page, not the CDN. Openverse
+returns `foreign_landing_url` and `license_url` for exactly this, so both SOULs now
+require citing the landing page and the licence URL. Worth a re-test on the next real
+document; I did not rebuild the sample just to change a URL.
+
+**Scratch cleaned up** — the sample PDF, probe images and Openverse JSON were scratch,
+not deliverables.

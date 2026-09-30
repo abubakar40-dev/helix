@@ -1585,3 +1585,69 @@ document; I did not rebuild the sample just to change a URL.
 
 **Scratch cleaned up** — the sample PDF, probe images and Openverse JSON were scratch,
 not deliverables.
+
+---
+
+## 2026-09-30 — Phase 3: local AI fallback (Ollama), wired and proven to fire
+
+§25 Phase 3 asks for "Ollama + a small quantized model (§10), wired as a fallback, not
+primary". §10 names `qwen2.5:3b-instruct-q4_K_M` and says local should handle PC commands,
+routing/classification and offline document analysis — never primary.
+
+### Almost entirely reuse
+Checked before installing anything:
+
+- **Ollama 0.34.0 was already installed** at `/usr/local/bin/ollama`, running as a
+  *system* unit.
+- **`qwen2.5:3b` (1.9 GB) was already pulled** two weeks earlier.
+- **Hermes already supports `ollama` as a provider** (`hermes_cli/providers.py`).
+
+So the only missing piece was the wiring. No downloads, no new packages.
+
+### Wired as the last link on all nine profiles
+`hermes fallback add` is an interactive picker, so this is a config edit (backups written
+as `*.bak-before-ollama` next to each config). Chain is now three deep everywhere:
+
+```
+1. openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+2. openrouter/openrouter/free
+3. ollama/qwen2.5:3b                      <- local, last resort only
+```
+
+Local is **last** deliberately: build spec §2 mandates online-first, and §10 says the same.
+
+### Proved the fallback actually fires — three attempts, two of them invalid
+Worth recording, because both earlier attempts tested the wrong thing:
+
+1. **`unshare -rn` with loopback up — invalid test.** Ollama binds the *host* loopback,
+   so a fresh network namespace cannot reach it. The namespace came up fine and
+   `127.0.0.1` was live, but the API was unreachable. My test method was broken, not the
+   setup. (Same class of trap as the earlier offline-TTS work.)
+2. **Pointing the chain at nonexistent model names — also invalid.** Hermes treats an
+   invalid model ID as a *config* error and refuses to run at all
+   (*"is not a valid model ID"*). It does not walk the chain. So that proved nothing
+   about fallbacks.
+3. **A real connection error — the valid test.** `providers.py` gives every provider a
+   `base_url_env_var`; for openrouter that is `OPENROUTER_BASE_URL`. Pointed it at
+   `http://127.0.0.1:9/dead` **via environment only, touching no config**, and ran a
+   oneshot. Primary failed, both openrouter links failed, the chain walked to ollama:
+
+   > `FELLBACK-OK`
+
+   That is the real thing: a genuine connection failure cascading down to the local
+   model and producing an answer.
+
+Config re-verified afterwards — primary `stealth/space-bunny-alpha`, three-entry chain
+intact, `providers` block still empty. The env override never touched disk.
+
+Also confirmed Hermes drives the local model on its own: `--model ollama/qwen2.5:3b`
+returned `WIRING-OK`, and a plain cloud run still returned `CLOUD-OK` (the chain edit did
+not break normal operation).
+
+### Memory reality on a 7 GB box
+§5 warns this machine often has ~1 GB free. Measured 2.1–3.1 GB available, and the model
+is 1.9 GB — so loading it is genuinely tight. But it is the *last* link, so it only ever
+loads when both free cloud models have already failed, which is precisely when having
+something is better than having nothing. Ollama's own server process sits at 23 MB RSS
+when idle; the weights are demand-loaded. No `ponytail:` ceiling needed — the chain
+ordering already bounds the exposure.

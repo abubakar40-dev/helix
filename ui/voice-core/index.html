@@ -292,6 +292,23 @@ function startPump() {
 }
 
 // ── audio out: model -> speakers, interruptible ─────────────────────────────
+// Gemini Live sends RAW PCM16 mono @ 24 kHz, not a container. Feeding that to
+// ctx.decodeAudioData() throws, and the throw used to be swallowed by an empty
+// catch — so text came back fine and the voice was silent, which looked exactly
+// like "it only replies in text". Build the AudioBuffer from the samples instead.
+// Cross-checked against the old Jarvis: SEND_SAMPLE_RATE=16000, RECEIVE_SAMPLE_RATE=24000.
+const LIVE_OUT_RATE = 24000;
+let playWarned = false;
+
+function pcm16ToBuffer(chunk) {
+  const i16 = new Int16Array(chunk);
+  const f32 = new Float32Array(i16.length);
+  for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+  const ab = ctx.createBuffer(1, i16.length, LIVE_OUT_RATE);
+  ab.getChannelData(0).set(f32);
+  return ab;
+}
+
 async function playOut(chunk) {
   playQueue.push(chunk);
   if (playing) return;
@@ -300,13 +317,17 @@ async function playOut(chunk) {
     if (!liveReady) { playQueue = []; break; }        // interrupted: drop the rest
     const c = playQueue.shift();
     try {
-      const ab = await ctx.decodeAudioData(c);
-      if (!liveReady) { playQueue = []; break; }
+      const ab = pcm16ToBuffer(c);
       const src = ctx.createBufferSource();
       src.buffer = ab; src.connect(ctx.destination);
       speaking = true; setState("SPEAKING");
       await new Promise(r => { src.onended = r; });
-    } catch (e) {}
+    } catch (e) {
+      if (!playWarned) {          // never let a playback failure hide again
+        playWarned = true;
+        log("audio playback failed: " + e.message, "err");
+      }
+    }
   }
   playing = false; speaking = false;
   if (liveReady) { setState(awake ? "LISTENING" : "IDLE"); resetIdle(); }

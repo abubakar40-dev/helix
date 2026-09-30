@@ -2194,3 +2194,57 @@ parse time. Replaced with the explicit `U+0600–U+06FF` block and a comment say
 a literal Arabic-range character pair is a trap that looks fine in a diff.
 
 `node --check` passes on the 9.6 KB module script. `helix-live` and `helix-bridge` both active.
+
+---
+
+## 2026-10-01 — "it only replies in text": the audio was never being decoded
+
+The human talked to the rebuilt voice core and reported: *"it understands and responds
+back within seconds but the issue is it is only replying back in text format, i can't hear
+it's voice."*
+
+### The proxy logs were empty — because it never logs per connection
+First tried the obvious places and got nothing: the proxy journal was silent and `ss` showed
+no established connections. **That was my observability gap, not a symptom.** I fixed that
+too, so a dead audio path can never again be indistinguishable from a quiet model: each
+connection now prints frame and byte counts in both directions.
+
+### Root cause: raw PCM fed to a container decoder
+Cross-checked the old Jarvis rather than guessing, and the constants are right there:
+
+```python
+SEND_SAMPLE_RATE    = 16000
+RECEIVE_SAMPLE_RATE = 24000
+CHANNELS            = 1
+CHUNK_SIZE          = 1024
+pcm = _resample_pcm16(chunk, RECEIVE_SAMPLE_RATE, out_rate)   # raw int16
+```
+
+So Live's `msg.data` is **headerless PCM16 mono @ 24 kHz**. My page was doing
+`await ctx.decodeAudioData(chunk)`, which is a **container** decoder (WAV/OGG/MP3) and
+cannot read it.
+
+**And here is why it was invisible:** tested in a real browser — `decodeAudioData` on raw
+PCM does **not** throw synchronously. It returns a promise that rejects. My `await` sat
+inside a `try`, so the empty `catch (e) {}` swallowed the rejection. Text arrived, the
+panel showed replies, and the audio path quietly did nothing. Exactly the reported symptom.
+
+### Fix
+`pcm16ToBuffer()` — convert the Int16 samples to Float32 and build the AudioBuffer directly
+at 24 kHz, bypassing any container format. `decodeAudioData` is no longer used.
+
+Also replaced the empty catch: a playback failure now logs **once** and says so, so this
+class of bug can never hide again.
+
+### Verified, in layers
+1. **The audio was always fine.** Captured a real session through the proxy:
+   `139,680 bytes = 2.91s @ 24kHz mono PCM16`, RMS 5078, peak 28445 (87% fullscale).
+2. **It is genuinely speech**, not tones: whisper transcribed the model's own voice as
+   `جی میں آپ کی بات جی میں حازر ہوں حکم کی جی ہے`, matching the `reply` text frame-for-frame.
+3. **The new conversion works in a real browser AudioContext**: peak 0.61, RMS 0.431,
+   buffer rate 24000, with the page's `AudioContext` running at 48 kHz — which is fine,
+   because `createBuffer(1, n, 24000)` resamples on playback rather than depending on
+   `ctx.sampleRate`. The input resample reads `ctx.sampleRate` at runtime, so it adapts too.
+
+### Orb
+Untouched, as always. Only `ui/voice-core/index.html` and `tools/live_server.py` changed.

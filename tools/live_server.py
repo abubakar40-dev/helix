@@ -61,6 +61,9 @@ async def handle(ws):
         return
 
     await ws.send(json.dumps({"type": "ready", "model": MODEL, "voice": VOICE}))
+    # Per-connection counters. Without these the proxy is silent and a dead
+    # audio path is indistinguishable from a quiet model.
+    stats = {"in_frames": 0, "in_bytes": 0, "out_frames": 0, "out_bytes": 0}
     client = genai.Client(api_key=key, http_options={"api_version": "v1beta"})
     config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
@@ -80,6 +83,8 @@ async def handle(ws):
                 """Browser -> Gemini. Audio frames go straight through."""
                 async for msg in ws:
                     if isinstance(msg, bytes):
+                        stats["in_frames"] += 1
+                        stats["in_bytes"] += len(msg)
                         if len(msg) < 2:
                             continue
                         try:
@@ -141,6 +146,10 @@ async def handle(ws):
                 await to_gemini()          # returns when the browser disconnects
             finally:
                 reader.cancel()
+                secs = max(1, round(stats["in_bytes"] / 32000))
+                print(f"[live] {stats['out_frames']} audio frames / {stats['out_bytes']:,} B "
+                      f"out ({stats['out_bytes']/48000:.1f}s @24k mono) | "
+                      f"{stats['in_frames']} frames / {stats['in_bytes']:,} B in ~{secs}s", flush=True)
     except Exception as e:
         try:
             await ws.send(json.dumps({"type": "error", "error": str(e)[:200]}))

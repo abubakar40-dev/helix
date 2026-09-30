@@ -1651,3 +1651,76 @@ loads when both free cloud models have already failed, which is precisely when h
 something is better than having nothing. Ollama's own server process sits at 23 MB RSS
 when idle; the weights are demand-loaded. No `ponytail:` ceiling needed — the chain
 ordering already bounds the exposure.
+
+---
+
+## 2026-09-30 — Phase 7: proactive notifications (the only real gap in it)
+
+§25 Phase 7 lists long-running/background agents, multi-agent workflows, proactive
+notifications, advanced document pipelines, and remote control. Assessed each honestly
+rather than rebuilding:
+
+| ask | status |
+|---|---|
+| long-running / background agents | already real — the gateway's Kanban dispatcher picked up tasks unattended twice |
+| multi-agent workflows | already real — the §28 demo was exactly this |
+| advanced document pipelines | already real — the image work landed this session |
+| remote control | already real — WhatsApp *is* the remote surface |
+| **proactive notifications** | **genuinely absent — nothing spoke unless asked** |
+
+So only the last needed building. The cron scheduler was already running (host gateway
+PID 262629 serving all nine profiles, heartbeat 52s), so this was configuration, not code.
+
+### Job 1 — system watchdog, no LLM
+`~/.hermes/scripts/helix-watchdog.sh`, `--no-agent`, every 2h, delivered to WhatsApp.
+`--no-agent` is the documented *"classic watchdog pattern (memory alerts, disk
+alerts)"*: **empty stdout means silent**, so a quiet run costs zero tokens and the human
+is not spammed.
+
+Checks disk (warn 85% / critical 92%), available RAM (<500 MB / <250 MB), 1-minute load
+(>5), and that `hermes-gateway` and `helix-bridge` are still active.
+
+Tested **both directions**, which matters for an alerting job — a watchdog that has only
+ever stayed quiet is unproven:
+- healthy box → `0` bytes of stdout, exit 0
+- forced breach (thresholds tripped in a throwaway copy, service name made bogus) →
+  produced a correctly formatted alert reading real `/proc` values, with both the memory
+  and service checks firing
+
+### Proving delivery — the log lies, again
+The first real run was reported `ok`, but:
+
+- the **gateway journal had no entries at all** for that window
+- there was **no row** in `state.db`'s `delivery_obligations`
+- the only trace was the output file under `~/.hermes/cron/output/`
+
+So "succeeded" did not mean "delivered", and I was one step from reporting proactive
+notifications as working on no evidence. The record turned out to live somewhere else
+again — `~/.hermes/cron/executions.db` has a **`delivery_outcome`** column:
+
+```
+job=b30aa3f8 (watchdog)  status=completed  delivery_outcome='suppressed'
+job=9c757aa9 (test)      status=completed  delivery_outcome='delivered'
+```
+
+`suppressed` is precisely the designed behaviour (healthy box, empty stdout, stayed
+quiet) and `delivered` confirms a real send. **That column is the thing to check in any
+future cron work** — the gateway log and `delivery_obligations` both come up empty.
+
+### Job 2 — daily briefing, with an LLM
+`0 8 * * *`, delivered to WhatsApp, 15 lines max because it is read on a phone. Pulls
+real system facts (`df`/`free`/`uptime`) and three real stories from the bridge's own
+`/headlines` feed, with an explicit instruction not to invent a story that is not in that
+list. Verified by forcing a run: `delivery_outcome='delivered'`, and the output was real
+— disk 50%, RAM 2741 MB, load 1.17, three genuine headlines, "Nothing outstanding."
+
+The throwaway delivery-test job and its script were removed afterwards.
+
+### Two lessons from this stretch, both about evidence
+1. **A quiet log is not a healthy one.** The gateway logs nothing per message and nothing
+   per cron delivery. Twice today the answer was in SQLite (`state.db` for which profile
+   replied, `cron/executions.db` for whether a send happened).
+2. **Test alerting in both directions.** Silence is the easy path and proves nothing; the
+   forced-breach run is what makes the watchdog real.
+
+`hermes cron incidents`: none recorded.

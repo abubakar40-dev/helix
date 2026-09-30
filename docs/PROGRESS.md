@@ -1330,3 +1330,98 @@ to the Desktop — has not been run end to end. The pieces are now all present a
 independently verified; that run is the next step, and the human chose the narrower
 scope for this pass.
 
+
+---
+
+## 2026-09-30 — Requirements §28 flagship demo, run for real, and a defect I caught
+
+The human said to run the §28 demo end to end. Rather than orchestrating the two
+steps myself, I handed the **objective to the CEO agent** and required it to use
+Kanban tasks against the sub-agents — that is the real test of "CEO orchestrates".
+
+Topic chosen: *backing up personal data on a Linux laptop* (the §28 example was
+Forex; the spec's intent is the pipeline, and this topic is verifiable against real
+documentation and produces genuinely useful output).
+
+### What the CEO did
+Created `research` task `t_aa6ce3af` and `document` task `t_2a476d9d`, waited for
+both, and reported: PDF 25,652 bytes / 10 pages with a 6×4 comparison table on
+page 2; PPTX 43,566 bytes / 7 slides, 13.333×7.5in widescreen.
+
+It was **honest about four deviations** rather than glossing them:
+- could not run `hermes kanban dispatch` (no terminal tool in its toolset) — the
+  gateway's 60s background dispatcher picked the tasks up instead;
+- the PDF build crashed first (reportlab *"list in flowables"*), it found the cause
+  (a missing `*` splat) and recovered;
+- 7 slides rather than the requested "about 6", with the reasoning;
+- temp-script cleanup was blocked by the security scanner.
+
+### Verified myself, not relayed
+The CEO said it verified *"via the worker's own reopen script output"* — it has no
+terminal, so every number it gave me was second-hand. Checked independently:
+
+| claim | verified |
+|---|---|
+| PDF 25,652 bytes | 25,652 ✓ |
+| PDF 10 pages | 10 ✓ |
+| 6×4 table, header `Layer / Representative tools / What it protects / Verdict for a laptop` | present on page 2, header matches exactly ✓ |
+| PPTX 43,566 bytes | 43,566 ✓ |
+| PPTX 7 slides | 7 ✓ |
+| widescreen 13.333×7.5in | 13.333×7.5 ✓ |
+| real sourced content | **25 distinct source URLs** in the PDF text ✓ |
+
+My first PPTX probe reported all 7 slide titles as empty. That was **my** probe
+being wrong, not a bad deck: the slides use text boxes rather than title
+placeholders, so `shapes.title` is `None`. Extracting every text frame showed all
+seven slides substantive (*"The five backup layers, compared"*, *"Eight mistakes that
+destroy backups"*, *"Sources, and what to distrust"*, …). A missing title
+placeholder is not a missing title.
+
+### A real defect, which the CEO's own verification missed
+Rendering page 2 to PNG showed the bold labels colliding with the line above them.
+The CEO had reported checking margins and that "zero spans cross page or table
+boundaries" — it did not catch this.
+
+Raw character extraction (ground truth) showed why: the PDF literally spells
+
+```
+x=68.4  b     x=72.8  u     x=77.3  l     x=79.0  l
+x=80.4  H  (Helvetica-Bold)   ← 0.4pt into the preceding 'l'
+```
+
+The word **`bullet`** is rendered as text where a bullet glyph belongs, running
+straight into the bold label. 10 word-level overlaps, on pages 2 and 4.
+
+**Two of my own measurements were wrong before the third was right**, and the
+difference matters for anyone re-checking this:
+- word-level `extract_words()` reported **0 overlaps** — wrong. It merges the
+  colliding runs into single word objects, hiding the collision.
+- a first char-level pass reported **85** — also wrong, it flags ordinary
+  within-word kerning (`H`→`e` at 87.3 vs 80.8) as a collision.
+- the real signal is a *cross-font, cross-word* overlap: a Helvetica char ending
+  inside a Helvetica-Bold run (`l`→`H`, 80.8 vs 80.4).
+
+Retasked `document` (`t_8dcaecd8`) to fix it at the source. It regenerated the
+PDF — 25,598 bytes at 13:05 — keeping all content and tables. Verified: **0 lines
+containing the literal word `bullet`**, 10 pages, and pages 2 and 4 re-rendered and
+read visually: real bullet glyphs, no collision, table and hierarchy intact.
+
+### Deliverables
+```
+/home/abubakargcx/Desktop/helix-backup-guide.pdf    25,598 bytes  10 pages
+/home/abubakargcx/Desktop/helix-backup-guide.pptx   43,566 bytes   7 slides
+```
+
+### WhatsApp: confirmed a human-only action, and I know exactly why
+`hermes whatsapp` is guarded by `_require_tty` — the source says outright that
+`input()` prompts *"spin at 100% CPU on a pipe"*, and the subcommand's own
+`description` confirms it sets up the **Baileys bridge for personal accounts**.
+It is interactive by design: it prompts for mode and allowed users, then renders a
+QR and waits for the phone.
+
+Read `hermes_cli/main_platform_setup.py` to tell the human what to expect. Pairing
+writes `~/.hermes/whatsapp/session/creds.json` and sets `WHATSAPP_MODE`
+(`bot` or `self-chat`) plus `WHATSAPP_ALLOWED_USERS` into the profile `.env`.
+Nothing exists there yet — no session on disk.
+
+There is no non-interactive path and I did not try to fake one.

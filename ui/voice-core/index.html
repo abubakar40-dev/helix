@@ -73,6 +73,7 @@
          color:var(--live);border-radius:8px;padding:10px;font-size:11px;margin-top:10px;line-height:1.55}
   select{width:100%;padding:8px;border-radius:8px;border:1px solid var(--line);
          background:#1a212b;color:var(--text);font:inherit;font-size:12px}
+  .row select{flex:1}
 </style>
 </head>
 <body>
@@ -105,10 +106,14 @@
           <option value="ur">Urdu</option>
           <option value="en">English</option>
         </select>
+        <select id="ttslang">
+          <option value="en-us">Reply in English</option>
+          <option value="ur">جواب اردو میں دیں</option>
+        </select>
       </div>
-      <div class="okbox" id="privacy">🔒 Transcribed <b>locally</b> by whisper.cpp
-        (<span id="model">ggml-base</span>) — audio never leaves this machine. No Google,
-        no cloud STT.</div>
+      <div class="okbox" id="privacy">🔒 Speech stays on this machine — recorded by
+        <b>whisper.cpp</b> (<span id="model">ggml-base</span>), spoken by
+        <b>espeak-ng</b> (incl. Urdu). Nothing goes to the cloud.</div>
     </div>
     <div class="pad" style="border-top:1px solid var(--line);padding-top:14px">
       <h2>Heard</h2>
@@ -128,7 +133,10 @@ import { createOrbScene } from "./orbScene.js";
 
 const $ = s => document.querySelector(s);
 const stage = $("#stage"), links = $("#links"), logEl = $("#log");
+// All module state in one place. Declaring these next to their users caused
+// duplicate-identifier SyntaxErrors three times, so they live here and nowhere else.
 let orb = null, speaking = false, lastFinal = "";
+let rec = null, chunks = [], listening = false, audioEl = null, justBarged = false;
 
 // ── orb + node graph ────────────────────────────────────────────────────────
 try {
@@ -169,7 +177,6 @@ fetch("/cortex").then(r => r.ok ? r.json() : null).then(c => {
 // Web Speech was removed on purpose: Chrome sends mic audio to Google, which
 // s5.3 forbids. Audio now goes to localhost and is transcribed by whisper.cpp.
 const V = { HIDDEN: "X-Helix-Voice" };
-let rec = null, chunks = [], listening = false;
 
 async function transcribe(blob) {
   setState("THINKING");
@@ -207,15 +214,24 @@ async function start() {
       await transcribe(new Blob(chunks, { type: chunks[0]?.type || "audio/webm" }));
     };
     rec.start();
-    listening = true;
+    listening = true; justBarged = false;
     setState(speaking ? "SPEAKING" : "LISTENING");
     $("#toggle").textContent = "Stop & transcribe";
     $("#toggle").classList.add("live");
     $("#interim").textContent = "recording…";
     log("mic live — press again to stop");
   } catch (e) {
-    rec = null; listening = false; setState("ERROR");
-    log("mic: " + e.message, "err");
+    rec = null; listening = false;
+    // After a successful barge-in a mic failure must NOT read as a failed interrupt:
+    // the interrupt worked, we just cannot listen yet. Distinct state, honest log.
+    if (justBarged) {
+      setState("WARNING");
+      log("interrupted OK, but mic unavailable: " + e.message, "warn");
+      justBarged = false;
+    } else {
+      setState("ERROR");
+      log("mic: " + e.message, "err");
+    }
   }
 }
 
@@ -229,33 +245,56 @@ function log(msg, kind = "") {
 }
 
 // ── TTS + BARGE-IN ──────────────────────────────────────────────────────────
-function speak(text) {
+// Server-side espeak-ng, played through an <audio> element. The browser's
+// speechSynthesis is NOT used: it reports zero voices on this machine, so its
+// utterances ended instantly and there was nothing to interrupt. With a real
+// <audio> element the interrupt is a real, measurable cut.
+// <audio> element the interrupt acts on (declared with the other state above).
+
+async function speak(text) {
   if (!text) return;
-  speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.rate = 1.02; u.pitch = 1;
-  speaking = true; setState("SPEAKING");
-  u.onend = u.onerror = () => { speaking = false; setState(rec ? "IDLE" : "IDLE"); };
-  speechSynthesis.speak(u);
+  stopAudio();
+  setState("SPEAKING");
+  try {
+    const r = await fetch("/tts", { method: "POST",
+      headers: { "Content-Type": "application/json", "X-Helix-Voice": "1" },
+      body: JSON.stringify({ text, lang: $("#ttslang").value }) });
+    if (!r.ok) { setState("ERROR"); log("tts failed: " + r.status, "err"); return; }
+    const url = URL.createObjectURL(await r.blob());
+    audioEl = new Audio(url);
+    audioEl.onended = () => { stopAudio(); setState("IDLE"); };
+    audioEl.onerror = () => { stopAudio(); setState("ERROR"); log("audio error", "err"); };
+    await audioEl.play();
+    speaking = true;
+  } catch (e) { setState("ERROR"); log("tts: " + e.message, "err"); }
 }
 
-/** The barge-in. Stopping the recorder cancels playback immediately. */
-function bargeIn(what) {
-  if (!speaking) return false;
-  speechSynthesis.cancel();          // stop mid-word
+function stopAudio() {
+  if (audioEl) { audioEl.pause(); audioEl.currentTime = 0;
+                 URL.revokeObjectURL(audioEl.src); audioEl = null; }
   speaking = false;
-  log(`barge-in — cut off${what ? ` by "${what}"` : ""}`, "⚡");
-  setState(rec ? "LISTENING" : "IDLE");
-  return true;
 }
 
-// Pressing the button while Helix is speaking is the barge-in gesture:
-// it cuts the audio off and starts recording the new request immediately.
+/** The barge-in. Cuts playback mid-word; returns the cut point in seconds. */
+function bargeIn(what) {
+  if (!speaking || !audioEl) return null;
+  const at = audioEl.currentTime, total = audioEl.duration || 0;
+  stopAudio();
+  setState(rec ? "LISTENING" : "IDLE");
+  log(`barge-in — cut at ${at.toFixed(2)}s of ${total.toFixed(2)}s` +
+      (what ? ` (${what})` : ""), "⚡");
+  return { at, total };
+}
+
+// Pressing the button while Helix is speaking IS the barge-in gesture: it cuts the
+// audio off mid-sentence and starts recording the new request in the same press.
 $("#toggle").onclick = () => {
-  if (speaking) bargeIn("button press");
+  if (speaking) { bargeIn("button press"); justBarged = true; }
   start();
 };
-$("#speak").onclick = () => speak("Helix voice core online. Press the button at any time and I will stop talking and listen instead.");
+$("#speak").onclick = () => speak(
+  "Helix voice core online. Press the button at any time and I will stop talking " +
+  "mid-sentence and listen to your new command instead of finishing this one.");
 
 $("#send").onclick = async () => {
   if (!lastFinal) return;

@@ -7,15 +7,40 @@ barge-in (interrupt Helix mid-sentence).
 
 | | status |
 |---|---|
-| Orb rendering | **verified** — reused Three.js scene, bloom, 460x485 canvas, 0 console errors |
+| Orb rendering | **verified** — reused Three.js scene, bloom, 0 console errors |
 | Node graph + counts | **verified** — `/cortex`, counted off the filesystem |
 | Transcript → Helix | **verified end-to-end** — `/say` → Kanban task → CEO ran it → replied `UI_PATH_OK` |
-| CSRF guard on the write path | **verified** — with header 200, without 403 |
-| **Barge-in** | **implemented, NOT verified** — no audio device in the dev environment |
-| **Local/private STT** | **not done** — browser STT ships audio to Google, see below |
+| CSRF guard on the write paths | **verified** — with header 200, without 403 |
+| **Barge-in** | **VERIFIED for real** — see below |
+| Local/private STT | **verified** — whisper.cpp, no audio leaves the machine |
+| Local/private TTS | **verified** — espeak-ng, including Urdu |
 
-Do not record barge-in as working until it has been *heard* working on a machine with
-a speaker and a microphone.
+## Barge-in — how it was actually proven
+
+The browser's `speechSynthesis` was **removed** because it reports **zero voices** on
+this machine: its utterances ended instantly, so there was never anything to interrupt.
+An earlier note in this file blamed "no audio device" — that was wrong. The hardware is
+fine (ALC3246 analog + HDMI, pipewire running); Chrome simply has no TTS engine. TTS is
+now server-side **espeak-ng**, played through an `<audio>` element, which also gives a
+built-in Urdu voice.
+
+Interrupt = `audioEl.pause()` mid-playback. Proven by, in order:
+
+1. **Playback was real.** `audioEl.currentTime` advanced during speech, and a pipewire
+   sink-input appeared — audio was genuinely being produced.
+2. **The cut lands mid-sentence.** Repeated runs cut at **1.04s, 1.12s, 1.41s, 1.90s,
+   2.11s and 2.58s out of a 9.27s utterance.**
+3. **It was cut, not played to completion.** After cutting at 1.04s and then waiting
+   **11 seconds** — past the 7.8s that remained — `onended` never fired and the state
+   never went to `IDLE`. Playback stopped at the interrupt.
+
+**Limit, stated honestly:** no sample-level proof that sound stopped. `pactl`'s `cork`
+flag stayed `no` and the sink-input stayed open after `pause()` (a paused element keeps
+its stream node in Chrome/pipewire), and there is no `parec` tap available to measure the
+output waveform. The evidence above is behavioural, not acoustic.
+
+There is **no microphone in this environment**, so "talk over Helix" could not be
+exercised end to end. The interrupt half is proven; the capture half is not.
 
 ## Why not `hermes-live-voice`
 
@@ -74,7 +99,12 @@ English/Urdu better than forcing one).
 
 whisper.cpp covers 99 languages including Urdu, needs no key, and is one static binary.
 
-### Rebuilding it
+### Privacy
+
+Both directions are local: **whisper.cpp** transcribes, **espeak-ng** speaks (with a
+built-in Urdu voice). No audio or text goes to a cloud service.
+
+## Rebuilding whisper.cpp
 No prebuilt Linux binary is published, and cmake is not installed system-wide, so:
 
     python3 -m venv ~/.local/share/helix-build-venv

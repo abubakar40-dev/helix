@@ -222,6 +222,14 @@ MAX_AUDIO = 12 * 1024 * 1024  # ~12MB, roughly 3 minutes of opus
 # Oversubscribing the cores makes it ~5x SLOWER. ponytail: revisit only if the box
 # stops being busy, and re-measure before assuming.
 STT_THREADS = "2"
+# ponytail: 2 threads, NOT nproc, and that is deliberate. This box is 4 cores sitting
+# at load ~9 (desktop app). Same 30s clip, measured through /stt on this machine:
+#     -t 4 (whisper's default) -> 100.0s   0.30x realtime
+#     -t 3                      ->  28.1s   1.07x
+#     -t 2                      ->  21.5s   1.40x   <-- this
+#     -t 1                      ->  34.4s   0.87x
+# Oversubscribing the cores is ~5x SLOWER. It reads like a bug; it is not. Re-measure
+# before changing it, and only if the box stops being busy.
 
 
 def stt(audio: bytes, lang: str = ""):
@@ -265,6 +273,37 @@ def stt(audio: bytes, lang: str = ""):
                 "ms": int((time.time() - t0) * 1000)}
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "whisper timed out"}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def tts(text: str, lang: str = "en-us"):
+    """Render speech locally with espeak-ng. Returns (wav_bytes, error).
+
+    Replaces the browser's speechSynthesis, which reports ZERO voices on this box, so
+    its utterances ended instantly and barge-in could not be exercised at all.
+    espeak-ng is already installed, is local, and has a built-in Urdu voice.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None, "empty text"
+    if len(text) > 2000:
+        return None, "text too long"
+    if not re.fullmatch(r"[a-z]{2,3}(-[a-z]{2,4})?", lang or ""):
+        return None, "bad lang"
+    tmp = tempfile.mkdtemp(prefix="helix-tts-")
+    wav = os.path.join(tmp, "out.wav")
+    try:
+        p = subprocess.run(["espeak-ng", "-v", lang, "-s", "165", "-w", wav, text],
+                           capture_output=True, timeout=60)
+        if p.returncode != 0 or not os.path.isfile(wav):
+            return None, "espeak: " + p.stderr.decode()[:120]
+        with open(wav, "rb") as f:
+            return f.read(), None
+    except FileNotFoundError:
+        return None, "espeak-ng not installed"
+    except subprocess.TimeoutExpired:
+        return None, "espeak timed out"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -344,15 +383,16 @@ class Handler(BaseHTTPRequestHandler):
         # here. Any page in any browser can POST to 127.0.0.1, so requiring a custom
         # header forces a CORS preflight that we never answer — a foreign page then
         # cannot make the browser send it.
-        if self.path.split("?", 1)[0] not in ("/say", "/stt"):
+        if self.path.split("?", 1)[0] not in ("/say", "/stt", "/tts"):
             return self.send_error(404)
         if self.headers.get("X-Helix-Voice") != "1":
             return self._send_json({"ok": False, "error": "missing X-Helix-Voice header"}, 403)
         n = int(self.headers.get("Content-Length") or 0)
         is_stt = self.path.split("?", 1)[0] == "/stt"
+        is_tts = self.path.split("?", 1)[0] == "/tts"
         # Different caps: a JSON note is tiny, audio is not. A single 64KB cap on
         # both capped /stt at ~2 seconds of audio, which looked like "STT broken".
-        limit = MAX_AUDIO if is_stt else 64_000
+        limit = 64_000 if not is_stt else MAX_AUDIO
         if n > limit:
             return self._send_json({"ok": False, "error": "body too large"}, 413)
         lang = ""
@@ -361,6 +401,20 @@ class Handler(BaseHTTPRequestHandler):
             lang = (q.get("lang") or [""])[0]
         body = self.rfile.read(n) if n else b""
         try:
+            if is_tts:
+                try:
+                    payload = json.loads(body or b"{}")
+                except ValueError:
+                    return self._send_json({"ok": False, "error": "bad json"}, 400)
+                wav, err = tts(payload.get("text"), payload.get("lang") or "en-us")
+                if err:
+                    return self._send_json({"ok": False, "error": err}, 400)
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Content-Length", str(len(wav)))
+                self.end_headers()
+                self.wfile.write(wav)
+                return
             if is_stt:
                 return self._send_json(stt(body, lang))
             try:

@@ -867,3 +867,68 @@ was only knowable by measuring on the real box under real load.
 
 Re-verified after both fixes: Urdu auto-detect `"Islamabad!"`, Urdu forced-to-`ur`
 gives Urdu script, English 3 s clip transcribes correctly.
+
+### Two bugs fixed, now documented in code as well as here
+
+**1. `/stt` was capped at ~2 seconds of audio.** The 64 KB body limit intended for the
+JSON `/say` payload was also applied to audio. At 16 kHz mono that is ~32 KB/second, so
+any clip over 2 s returned `{"ok": false, "error": "body too large"}`. The first browser
+test used a 48 KB clip and passed, which is exactly how it stayed hidden. Audio and JSON
+now have separate caps (12 MB / 64 KB).
+
+**2. Thread oversubscription made it ~5x slower.** whisper defaults to one thread per
+core; this is 4 cores at load ~9, so it thrashed. Same 30 s clip:
+
+| `-t` | time | rate |
+|---|---|---|
+| 4 (whisper's default) | 100.0 s | 0.30x realtime |
+| 3 | 28.1 s | 1.07x |
+| **2** | **21.5 s** | **1.40x** |
+| 1 | 34.4 s | 0.87x |
+
+`STT_THREADS = "2"` in `bridge/server.py` carries this table as a comment, because it
+reads like a mistake and someone will otherwise "fix" it back to `-t 4`.
+
+### Barge-in: implemented, then actually verified
+
+**My earlier "no audio device" explanation was wrong.** The hardware is fine —
+ALC3246 analog + HDMI, pipewire running, espeak-ng installed. The real cause was that
+Chrome's `speechSynthesis.getVoices()` returns **zero voices**, so its utterances ended
+instantly and there was never anything to interrupt. Diagnosed by checking the voice
+list rather than assuming.
+
+**Fix:** TTS moved server-side to **espeak-ng** (already installed, local, and it has a
+built-in Urdu voice), rendered by a new `POST /tts` and played through an `<audio>`
+element. `speechSynthesis` is gone. The interrupt is now `audioEl.pause()` on a real,
+measurable media element.
+
+Proven in three steps rather than assumed:
+
+1. **Playback was real.** `currentTime` advanced during speech, and a pipewire
+   sink-input appeared — audio was actually being produced, not simulated.
+2. **The cut lands mid-sentence.** Across repeated runs the interrupt fired at
+   **1.04s, 1.12s, 1.41s, 1.90s, 2.11s and 2.58s of a 9.27s utterance.**
+3. **Cut, not played to completion.** After cutting at 1.04s and waiting **11 seconds**
+   — longer than the 7.8s that remained — `onended` never fired and the state never
+   reached `IDLE`. Playback stopped at the interrupt.
+
+**Honest limit on that proof:** there is no sample-level acoustic evidence. `pactl`'s
+`cork` flag stayed `no` and the sink-input stayed open after `pause()` (Chrome keeps the
+stream node alive for a paused element), and no `parec` tap is available to sample the
+output. The proof is behavioural, not acoustic.
+
+**Still not exercised:** "talk over Helix" needs a microphone, and there is none in this
+environment. The interrupt half is proven; the capture half is not.
+
+### Third bug found by that test: a mic failure made barge-in look broken
+The first interrupt run ended in `ERROR`, and the log said `mic: Permission denied` —
+the interrupt had *worked*, but the subsequent `getUserMedia` failure overwrote the state
+and buried the success message. A user whose mic hiccuped after interrupting would have
+concluded the barge-in failed. Now a mic failure immediately after an interrupt settles
+on `WARNING` with `"interrupted OK, but mic unavailable: …"`; a genuine cold-start mic
+failure still reports `ERROR`.
+
+Verified after the fix: `before: SPEAKING` → `settled: WARNING`, log ordering correct.
+
+Also: all module state in the page is declared in one block. Splitting it next to its
+users caused a duplicate-identifier `SyntaxError` three separate times.

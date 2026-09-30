@@ -1425,3 +1425,89 @@ writes `~/.hermes/whatsapp/session/creds.json` and sets `WHATSAPP_MODE`
 Nothing exists there yet — no session on disk.
 
 There is no non-interactive path and I did not try to fake one.
+
+---
+
+## 2026-09-30 — WhatsApp paired, and the first real message found the CEO had no persona
+
+The human ran `hermes whatsapp` themselves (it is interactive-only by design — see the
+previous entry) and scanned the QR. Paired in **self-chat** mode, allowed user
+`923203814829`.
+
+### Verified, not assumed
+- `~/.hermes/whatsapp/session/creds.json` — 1846 bytes with genuine crypto material
+  (`noiseKey`, `advSecretKey`, `signedIdentityKey`, `me`, `registered`), not empty braces.
+- `session-279503771283483_1.0.json` present.
+- Bridge reached `status: connected`, listening on `127.0.0.1:3000`.
+- `~/.hermes/.env` gained `WHATSAPP_MODE=self-chat`,
+  `WHATSAPP_ALLOWED_USERS=923203814829`, `WHATSAPP_ENABLED=true`.
+
+### First real message round-trip: it worked, and it exposed two bugs
+
+**Bug 1 — the CEO had never had a persona.** The reply was:
+
+> "I'm Hermes, an AI agent. Not Helix — I don't have a persona name beyond that."
+
+`~/.hermes/SOUL.md` was **one line of stock Nous Research text, dated 27 Sep** — before
+any Helix work. All eight sub-agents had carefully written SOULs; the CEO, the one that
+talks to the human, had the install default. Nothing caught it because delegation runs
+CEO→sub-agent and every sub-agent has its own identity.
+
+Replaced with a 58-line CEO persona: the nine-agent roster, the Kanban delegation recipe
+(`create --body --assignee --workspace` → `dispatch` → poll `show` until `done`), the
+§6.1 responsibilities, and the rule this whole project exists to enforce — *never report
+a result you have not checked yourself*. Stock SOUL kept at `SOUL.md.bak-stock-hermes`.
+
+**Bug 2 — my own routing hack was wrong twice.** I had added a `profile_routes` entry to
+send WhatsApp to `comm`, reasoning from §7.7. It was wrong on both counts:
+
+- *It could never match.* `ProfileRoute.matches()` does an **exact** `user_id` compare,
+  but the live value is `923203814829@s.whatsapp.net`. I had written the bare number. The
+  JID/LID tolerance in that function applies to `chat_id`, not `user_id`.
+- *The architecture was wrong anyway.* §6.1 makes HELIX the entry point that receives
+  requests and delegates. Routing raw WhatsApp at `comm` would bypass the CEO.
+
+Reverted: `config.yaml` restored from `config.yaml.bak-before-wa-route`, `profile_routes`
+absent again. WhatsApp reaches the CEO, which delegates to `comm` when a message actually
+needs sending. Zero config, correct design. The stale session (pinned to `default` with
+the old system prompt baked in) was deleted so the new SOUL would apply.
+
+Re-tested: HELIX now answers as *"the CEO and orchestrator of the local multi-agent
+system"*, names all nine agents, and says it directs rather than does the work.
+
+**A note on evidence:** the gateway unit logs **nothing per-message**, so the log could
+not tell me which profile replied. I read it out of `state.db` instead
+(`sessions.profile_name`), which is also what exposed the pinned session. The watcher I
+armed for this was useless — worth remembering before trusting a quiet log as a healthy one.
+
+### Bug 3 — voice messages: HELIX was wrong that STT didn't exist
+
+The human sent a voice note; HELIX replied that it had no speech-to-text tool and offered
+to have `pc` set one up. §7.7 explicitly requires *"voice-message transcription"*, and
+whisper.cpp was already built and wired into the bridge for Voice Core. The CEO simply
+did not know.
+
+Rather than build anything, read how Hermes does local STT. `tools/transcription_local.py`
+supports a **`local_command`** provider driven by `HERMES_LOCAL_STT_COMMAND`, with
+`{input_path}` / `{model}` / `{output_dir}` / `{language}` placeholders, reading back
+`{output_dir}/*.txt`. So the existing binary was one env var away.
+
+**`.env` would not have worked** — `load_env()` returns a dict and does *not* populate
+`os.environ`, which is what `_get_local_command_template()` reads. Used a systemd drop-in
+instead, `~/.config/systemd/user/hermes-gateway.service.d/stt.conf`, and confirmed the
+variable is really in `/proc/<pid>/environ` after restart. `stt.provider` set to
+`local_command` and `stt.language` to `auto` (§9 needs English/Urdu/mixed;
+`_resolve_stt_language` does not validate, so `auto` reaches whisper's `-l auto`).
+
+Proven on the human's **actual** voice note, not a synthetic clip:
+- manual run of the exact template command → `Hello Helix, how are you?` in 6.5s
+- then through **Hermes's own** `_transcribe_local_command()` → `provider: local_command`,
+  same transcript, auto-converted from `.ogg`, no error
+
+Also added a *Voice* section to the CEO SOUL telling it transcription is local and
+automatic, and — because its failure mode was offering to set up a tool that already
+exists — to report a real break plainly instead.
+
+### All nine agents are now reachable from a phone
+`helix` (CEO) over WhatsApp, delegating to `research, document, pc, dev, vision, comm,
+sysmon, career` over Kanban. The last never-exercised gateway path is closed.

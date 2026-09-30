@@ -190,6 +190,39 @@ def cortex():
     }
 
 
+def task(task_id):
+    """Read a Kanban task back: status plus the worker's own summary.
+
+    /say returns a task id and then nothing ever read the result, so a voice
+    request produced silence. This is that missing return leg, so Voice Core can
+    wait for the answer and speak it instead of guessing.
+    """
+    task_id = (task_id or "").strip()
+    if not re.fullmatch(r"t_[0-9a-f]{4,32}", task_id):
+        return {"ok": False, "error": "bad task id"}
+    out = subprocess.run(["hermes", "kanban", "show", task_id],
+                         capture_output=True, text=True, timeout=60)
+    if out.returncode != 0:
+        return {"ok": False, "error": (out.stderr or out.stdout).strip()[:200]}
+    text = out.stdout
+    status = ""
+    m = re.search(r"^\s*status:\s*(\S+)", text, re.M)
+    if m:
+        status = m.group(1)
+    # The completed event carries the authoritative summary; prefer it over the
+    # "Latest summary" block, which can lag or be truncated in a long listing.
+    summary = ""
+    ms = re.search(r"'summary':\s*\"(.*?)\"\s*(?:,|\})", text, re.S)
+    if ms:
+        summary = ms.group(1)
+    if not summary:
+        m2 = re.search(r"Latest summary:\s*\n(.+)", text)
+        if m2:
+            summary = m2.group(1).strip()
+    return {"ok": True, "task": task_id, "status": status or "unknown",
+            "summary": summary.strip()[:1200]}
+
+
 def say(text):
     """Create a Kanban task for the CEO from a voice transcript.
 
@@ -454,6 +487,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_file(asset)
         if path == "/state":
             return self._send_json(snapshot())
+        if path == "/task":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send_json(task((qs.get("id") or [""])[0]))
         if path == "/headlines":
             return self._send_json(headlines())
         if path == "/cortex":

@@ -1956,3 +1956,72 @@ bridge afterwards: edge 29,520 bytes, Piper 189,204 bytes, Urdu 19,152 bytes, al
 
 A model file that fails to load is worth catching by *running* it, not by checking that
 the download returned 200.
+
+---
+
+## 2026-09-30 — Voice Core had no conversation loop (the "no response" bug)
+
+The human tested the panel and reported: transcription works, but **you have to press
+buttons to record, and then there is no response to what was asked.**
+
+Read the code before changing anything. Two distinct defects, neither of them whisper:
+
+### Defect 1 — a second button was required
+`transcribe()` set the text, enabled `#send`… and stopped. Nothing auto-sent. So the flow
+was: press to record, press again to stop, press a third time to send.
+
+### Defect 2 — the reply never came back (the real one)
+`#send` POSTed to `/say`, which creates a **Kanban task**, then set state to `THINKING`.
+**Nothing ever read the result and nothing ever spoke it.** The task completed somewhere
+else, asynchronously, and the voice panel just sat there. The bridge had no read-back path
+at all — `/say` returned an id and that id was never used again.
+
+So it was not a voice problem. It was a one-way pipe with the return leg missing.
+
+### Fix 1 — `/task` read-back endpoint (bridge)
+New `task(task_id)` in `bridge/server.py` plus `GET /task?id=…`. It shells out to
+`hermes kanban show <id>`, the same call the CEO already uses, and returns status plus the
+worker's summary — preferring the authoritative `'summary':` field from the completed event
+over the `Latest summary:` block, which lags. The id is validated against `t_[0-9a-f]{4,32}`
+so the endpoint cannot be turned into an arbitrary-command runner.
+
+Verified before wiring the UI: created `t_34f528ca`, polled to `done`, summary came back
+as exactly `VOICE-LOOP-OK`.
+
+### Fix 2 — close the loop in the UI (`ui/voice-core/index.html`)
+- `askHelix(text)` — send and wait, shared by the button and by auto-send
+- `pollTask(id)` — polls every 2 s, speaks the summary on `done`, reports `failed`
+  honestly, and **gives up after 4 minutes saying so** rather than polling forever,
+  because silence is exactly what broke this
+- auto-send after a successful transcript, with a **send automatically** checkbox
+- a **"Helix said"** panel showing the answer as well as speaking it
+- `awaiting` guard so a second question cannot start while one is in flight
+
+**The orb was not touched.** Only `ui/voice-core/index.html` is modified;
+`git status` confirms `orbScene.js` is untouched, and the page still reports
+`orb ready` with its canvas present. The human said they love it, so it stayed as-is.
+
+### Verified
+- `python3 server.py --selftest` OK
+- Page initialises clean: state `IDLE`, `orb ready`, all controls bound, no JS errors
+- `node --check` passes on the 13.7 KB module script
+- **The full server sequence run from the page's own origin:**
+  `say ok=true task=t_e9dd799d || poll status=done || summary="PAGE-ORIGIN-LOOP-OK"`
+
+### What I could not verify
+`askHelix` and `pollTask` are module-scoped, so they are not on `window` and I could not
+invoke them from the harness (`askHelix is not defined`). Combined with the harness denying
+microphone permission, **the in-page wiring is unproven by me** — the endpoint sequence it
+performs is proven, the JavaScript that calls it is not. The human's next message is the
+real test.
+
+### Correcting myself on Gemini
+I have twice described Gemini as violating §5.3. **That was wrong.** §5.3 says to
+*minimise* data sent to Gemini and calls it "a standing constraint on any future use",
+and §9 lists Gemini Live as a candidate STT/TTS option. It is permitted, not forbidden.
+
+It would still need a Google Cloud API key (a free tier exists), which breaks the pattern
+of leaving the optional keyed provider layers unconfigured — that is the human's call, not
+mine. But the more important point: **Gemini would not have fixed either defect reported
+here.** Both were orchestration bugs in Helix — an extra button press and a missing return
+leg. A different STT/TTS vendor produces a nicer voice and exactly the same silence.

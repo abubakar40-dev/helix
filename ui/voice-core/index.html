@@ -102,9 +102,10 @@
         speaking, <b>press to interrupt</b> — or just <b>talk over it</b> if talk-over is on
         below. Either way it cuts off mid-sentence and takes your new words.</div>
       <div class="row">
+        <label class="vio"><input type="checkbox" id="autosend" checked> send automatically</label>
         <label class="vio"><input type="checkbox" id="talkover" checked> talk-over interrupts</label>
         <label class="vio">sensitivity
-          <input type="range" id="sens" min="1.2" max="3.5" step="0.1" value="1.8" style="width:78px">
+          <input type="range" id="sens" min="1.2" max="3.5" step="0.1" value="1.8" style="width:70px">
         </label>
       </div>
       <div class="row">
@@ -135,6 +136,8 @@
         <button id="send" disabled>Send to Helix</button>
         <button id="speak">Test TTS</button>
       </div>
+      <h2 style="margin-top:14px">Helix said</h2>
+      <div id="answer">—</div>
     </div>
     <div id="log"></div>
   </aside>
@@ -206,6 +209,9 @@ async function transcribe(blob) {
     $("#send").disabled = false;
     setState("WORKING");
     log(`heard: "${t}"`, "🎙");
+    // Send on its own unless the human unticked it. Requiring a second button press
+    // is what made this feel broken: you spoke, it heard you, and then it sat there.
+    if (autoSend) askHelix(t);
   } catch (e) { setState("ERROR"); log("stt unreachable: " + e.message, "err"); }
 }
 
@@ -404,21 +410,63 @@ $("#speak").onclick = () => speak(
   "Helix voice core online. Press the button at any time and I will stop talking " +
   "mid-sentence and listen to your new command instead of finishing this one.");
 
-$("#send").onclick = async () => {
-  if (!lastFinal) return;
+// ── conversation loop: ask → wait → answer, out loud ────────────────────────
+// Before this, /say created a task and nothing ever read the result, so a voice
+// request produced silence. Worse, the human had to press a second button to send
+// at all. A transcript now sends on its own and the reply is spoken when ready.
+
+let awaiting = null, autoSend = true;
+
+async function askHelix(text) {
+  if (!text || awaiting) return;
+  lastFinal = text;
   $("#send").disabled = true;
   setState("WORKING");
-  log(`→ Helix: "${lastFinal}"`, "out");
+  log(`→ Helix: "${text}"`, "out");
   try {
     const r = await fetch("/say", { method: "POST",
-                                   headers: { "Content-Type": "application/json",
-                                              "X-Helix-Voice": "1" },
-                                   body: JSON.stringify({ text: lastFinal }) });
+      headers: { "Content-Type": "application/json", "X-Helix-Voice": "1" },
+      body: JSON.stringify({ text }) });
     const d = await r.json();
-    if (d.ok) { log(`task ${d.task} created`, "✓"); setState("THINKING"); }
-    else { log("send failed: " + (d.error || r.status), "err"); setState("ERROR"); }
+    if (!d.ok) { log("send failed: " + (d.error || r.status), "err"); setState("ERROR"); return; }
+    log(`task ${d.task} created — waiting for the answer`, "✓");
+    setState("THINKING");
+    awaiting = d.task;
+    pollTask(d.task);
   } catch (e) { log("bridge unreachable: " + e.message, "err"); setState("ERROR"); }
-};
+}
+
+async function pollTask(id) {
+  // A sub-agent can be slow. Four minutes covers the slow ones; give up and say so
+  // rather than poll forever, because silence is exactly what broke this before.
+  const deadline = Date.now() + 240000;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 2000));
+    let d;
+    try { d = await (await fetch("/task?id=" + encodeURIComponent(id))).json(); }
+    catch (e) { continue; }
+    if (!d.ok) continue;
+    if (d.status === "done" && d.summary) {
+      awaiting = null;
+      $("#answer").textContent = d.summary;
+      log("Helix answered", "←");
+      speak(d.summary);
+      return;
+    }
+    if (d.status === "failed") {
+      awaiting = null;
+      log("that task failed — nothing to speak", "err");
+      setState("ERROR");
+      return;
+    }
+  }
+  awaiting = null;
+  log("no answer within 4 minutes", "warn");
+  setState("IDLE");
+}
+
+$("#send").onclick = () => askHelix(lastFinal);
+$("#autosend").onchange = e => { autoSend = e.target.checked; };
 
 setState("IDLE");
 drawLinks();

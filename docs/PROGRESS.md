@@ -1842,3 +1842,117 @@ globe frame         -> title "God's Eye View", 7 canvases, main one 640x627
 
 Cross-origin reachable, canvases sized to the frame. The patch genuinely works, and the
 script restores it if a pull ever breaks it.
+
+---
+
+## 2026-09-30 — Talk-over barge-in (the real §9 feature) + a deep male voice
+
+The human attached the laptop microphone, which unblocks the one item previously
+recorded as impossible on this box.
+
+### First: what "barge-in" actually was, and was not
+Read §9 before touching anything. The spec draws the loop as
+
+```
+Microphone → Wake Word → STT → HELIX → Agent/Tool → Action → TTS → Voice Response
+                                  ↑ interruptible at any point while speaking
+```
+
+and says the interrupt is *"a required feature, not optional"*. What was implemented was
+**button-press only** — pressing cut the audio. That satisfies "stop mid-sentence" but
+not "talk over", so this was a real gap, not just an untested one.
+
+### What I built
+In `ui/voice-core/index.html`:
+- one **persistent mic stream**, opened once; the recorder borrows it, so the human is
+  never prompted for the microphone twice
+- an `AnalyserNode` polled at 60 ms for RMS level
+- a **rolling floor** rather than a tuned constant: the trigger is a sustained *rise above
+  recent level*, so the bar climbs to the echo level by itself when Helix speaks and no
+  number has to know how loud the room is
+- an on/off checkbox and a **sensitivity slider** — a mic threshold in a real room is
+  exactly the kind of thing that needs a calibration knob
+- untick releases the mic and `beforeunload` stops the tracks, so the box is not left with
+  the mic light on
+
+`node --check` passes on the 12.2 KB module script.
+
+### Why the browser could not be the test
+The harness browser **denies microphone permission** and I have no tool to grant it:
+
+```
+warn talk-over unavailable: Permission denied
+🌐 spoke via edge-tts (9.2s)
+```
+
+TTS fine, mic refused. So `tools/check-talkover.py` replays the detector algorithm
+offline over **real captures** — stronger than a fake device, and no permission needed.
+
+### Getting a real capture took three attempts
+1. `-D default`, 4 s — worked, but peak at full scale; whisper returned repeated Urdu
+   gibberish and the envelope decayed 0.86 → 0.035. An impulse, not a voice.
+2. `-D hw:0,0` — "No bytes". The mic is routed through **PipeWire**; grabbing ALSA
+   directly conflicts with it.
+3. A detached `setsid` recorder — a background recording was reaped and truncated to
+   4.6 s on the first try. Detaching fully worked: 25 s captured, whisper transcribed
+   *"We have to get a lot of money."* **Real speech.**
+
+### Tuning: the shipped constants were wrong, and my first sweep lied about it
+Diagnosis on the real capture:
+
+```
+worst speech peak/floor  3.53   (threshold was 2.2 — speech DOES rise)
+longest run above 2.2x   120ms  (sustain needed 250ms)
+longest run above 1.5x   300ms
+```
+
+So speech rose but never for long enough. The original **2.2 / 250 ms would never have
+fired at all.**
+
+A parameter sweep appeared to show 1.8/200 passing all four cases. It did not, and the
+reason was an **off-by-one in my own sweep**: `int(200/60) = 3` polls, but the page tests
+`> 200ms` on a 60 ms poll, which really costs 4 polls. Re-swept with the page's exact
+timing, three settings genuinely pass: `(1.2, 240)`, `(1.4, 180)`, `(1.8, 120)`.
+
+Shipped **1.8 / 120 ms** — the highest echo margin and the fastest response.
+
+```
+[1] TTS echo alone                     -> NEVER fired  (correct)
+[2] TTS + human, no echo cancellation  -> fired at 240ms
+[3] TTS + human, echo cancellation     -> fired at 240ms
+VERDICT: PASS
+```
+
+**A second bug in my own harness:** the verdict asserted `risk < RATIO`, i.e. that TTS
+echo peaks stay under the trigger threshold. They reach **9.89×** the floor and always
+have — and that is *fine*, because the 120 ms sustain window is what rejects them, not the
+threshold. The criterion was wrong from the start and would have reported FAIL on correct
+code forever. Pass/fail is now purely behavioural; the 9.89 is a diagnostic.
+
+Worth recording plainly: **at 2.2 the feature would never have worked**, and the only
+reason I know is that I measured against a real voice instead of trusting the constant I
+had picked earlier.
+
+### Honest limits of this evidence
+- Case [3] is a **model** of echo cancellation (TTS attenuated −18 dB), not a measurement
+  of it. It bounds the question; it does not close it.
+- Human speech mean RMS 0.0497 vs TTS 0.0862 — **the voice is quieter than the echo it has
+  to beat.** That is why `echoCancellation: true` matters, and why headphones would help.
+- **The in-browser path remains unproven.** Only the human can grant the mic and speak over
+  a reply. The sensitivity slider exists so that check is one drag, not a rebuild.
+
+### Deeper male voice
+The human asked for a deep male voice; both engines were female (`en-GB-SoniaNeural`,
+`en_GB-alba-medium`).
+
+- edge English → **`en-GB-ThomasNeural`** (male), Urdu → **`ur-PK-AsadNeural`** (male)
+- Piper English → **`en_GB-alan-medium`**, downloaded for the offline path. Switching only
+  edge would have left Piper disagreeing and gone female whenever the internet dropped.
+
+The first Piper download **silently truncated at 46 MB of an expected 63 MB**, and Piper
+died with `Load model ... failed: Protobuf parsing failed`. Resumed with `curl -C -` to the
+full 63,201,294 bytes, after which it synthesises. Both engines verified through the live
+bridge afterwards: edge 29,520 bytes, Piper 189,204 bytes, Urdu 19,152 bytes, all HTTP 200.
+
+A model file that fails to load is worth catching by *running* it, not by checking that
+the download returned 200.

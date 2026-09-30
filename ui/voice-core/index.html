@@ -65,6 +65,7 @@
   #final{font-size:13px;min-height:44px;border:1px dashed var(--line);border-radius:8px;padding:11px}
   #interim{color:var(--dim);font-size:12px;margin-top:7px;min-height:18px;font-style:italic}
   .row{display:flex;gap:8px;margin-top:10px}
+  .vio{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);cursor:pointer}
   .row button{width:auto;flex:1;padding:9px;font-size:11px}
   #log{flex:1;overflow-y:auto;border-top:1px solid var(--line);padding:10px 16px;font-size:11.5px}
   .l{color:var(--dim);padding:2px 0;border-bottom:1px solid #1a212b}
@@ -98,8 +99,14 @@
     <div class="pad">
       <button id="toggle">Start listening</button>
       <div class="hint">Press to start, press again to stop and transcribe. While Helix is
-        speaking, <b>press to interrupt</b> — it cuts off mid-sentence and takes your new
-        words instead. That is barge-in.</div>
+        speaking, <b>press to interrupt</b> — or just <b>talk over it</b> if talk-over is on
+        below. Either way it cuts off mid-sentence and takes your new words.</div>
+      <div class="row">
+        <label class="vio"><input type="checkbox" id="talkover" checked> talk-over interrupts</label>
+        <label class="vio">sensitivity
+          <input type="range" id="sens" min="1.2" max="3.5" step="0.1" value="1.8" style="width:78px">
+        </label>
+      </div>
       <div class="row">
         <select id="lang">
           <option value="">Auto-detect (mixed)</option>
@@ -205,13 +212,13 @@ async function transcribe(blob) {
 async function start() {
   if (rec) { rec.stop(); return; }              // second press = stop & transcribe
   try {
-    const stream = await navigator.mediaDevices.getUserMedia(
-      { audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    // Borrow the monitor stream if it is already open (talk-over armed it), so the
+    // human is never prompted for the microphone twice.
+    const stream = await ensureMic();
     chunks = [];
     rec = new MediaRecorder(stream);
     rec.ondataavailable = e => chunks.push(e.data);
     rec.onstop = async () => {
-      stream.getTracks().forEach(t => t.stop());
       rec = null; listening = false;
       $("#toggle").textContent = "Start listening";
       $("#toggle").classList.remove("live");
@@ -280,13 +287,84 @@ async function speak(text) {
     }, { once: true });
     await audioEl.play();
     speaking = true;
+    // Arm talk-over only after playback actually started, and only if enabled.
+    if ($("#talkover").checked) {
+      try { await ensureMic(); watchForTalk(true);
+            log("talk-over armed — talk to interrupt", "🎙"); }
+      catch (e) { log("talk-over unavailable: " + e.message, "warn"); }
+    }
   } catch (e) { setState("ERROR"); log("tts: " + e.message, "err"); }
+}
+
+// ── voice barge-in: the human talking over Helix mid-sentence ────────────────
+// §9 asks for the loop to be "interruptible at any point while speaking", so a
+// button press alone is not the requirement — the human talks over the answer.
+//
+// The hard part is that the mic hears Helix's own voice through the speakers, so
+// a naive level trigger makes Helix interrupt itself the instant it starts
+// speaking. Fixed with a rolling floor rather than a tuned constant: the floor
+// tracks recent level, so while TTS plays the floor CLIMBS to the echo level by
+// itself and the bar rises with it. A human talking over is a further, sustained
+// rise above that. No number here has to know how loud the room is.
+
+let monStream = null, audioCtx = null, analyser = null, levelData = null;
+let vig = null, floor = 0, hotSince = 0;
+
+/** RMS 0..1 of the live mic. Cheap enough to poll at 60 ms. */
+function micLevel() {
+  if (!analyser) return 0;
+  analyser.getByteTimeDomainData(levelData);
+  let sum = 0;
+  for (let i = 0; i < levelData.length; i++) { const v = (levelData[i] - 128) / 128; sum += v * v; }
+  return Math.sqrt(sum / levelData.length);
+}
+
+/** One persistent mic stream, opened once. The recorder borrows it (no second prompt). */
+async function ensureMic() {
+  if (monStream && monStream.active) return monStream;
+  monStream = await navigator.mediaDevices.getUserMedia(
+    { audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  const AC = window.AudioContext || window.webkitAudioContext;
+  audioCtx = audioCtx || new AC();
+  const src = audioCtx.createMediaStreamSource(monStream);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 1024;
+  levelData = new Uint8Array(analyser.fftSize);
+  src.connect(analyser);          // analyser only — never to destination, or feedback
+  return monStream;
+}
+
+function watchForTalk(on) {
+  clearInterval(vig); vig = null; hotSince = 0;
+  if (on) {
+    floor = 0;
+    vig = setInterval(() => {
+      if (!speaking) { watchForTalk(false); return; }
+      const lvl = micLevel();
+      floor = floor ? floor * 0.9 + lvl * 0.1 : lvl;            // adapts to the echo
+      const ratio = parseFloat($("#sens").value) || 2.2;
+      const hot = lvl > Math.max(0.05, floor * ratio);
+      if (hot) {
+        if (!hotSince) hotSince = performance.now();
+        // 120 ms, not 250: measured against real speech captured from this machine's
+        // mic, 250 ms at ratio 2.2 never accumulated a long enough run above the
+        // floor to fire at all. 1.8/120 was the fastest setting that passed speech,
+        // TTS-echo-only, raw-sum and echo-cancelled cases together in
+        // tools/check-talkover.py. Keep the harness in sync if you retune.
+        else if (performance.now() - hotSince > 120) {           // sustained, not a click
+          hotSince = 0;
+          if (bargeIn("talked over")) { justBarged = true; start(); }
+        }
+      } else hotSince = 0;
+    }, 60);
+  }
 }
 
 function stopAudio() {
   if (audioEl) { audioEl.pause(); audioEl.currentTime = 0;
                  URL.revokeObjectURL(audioEl.src); audioEl = null; }
   speaking = false;
+  watchForTalk(false);
 }
 
 /** The barge-in. Cuts playback mid-word; returns the cut point in seconds. */
@@ -306,6 +384,22 @@ $("#toggle").onclick = () => {
   if (speaking) { bargeIn("button press"); justBarged = true; }
   start();
 };
+// Untick = stop listening for talk-over and hand the microphone back, so the box
+// is not left with the mic light on after someone decides they do not want it.
+$("#talkover").onchange = (e) => {
+  watchForTalk(false);
+  if (!e.target.checked && monStream && !rec) {
+    monStream.getTracks().forEach(t => t.stop());
+    monStream = null; analyser = null;
+    log("talk-over off — microphone released", "🔒");
+  } else if (e.target.checked) {
+    log("talk-over on — will interrupt when you speak", "🎙");
+  }
+};
+addEventListener("beforeunload", () => {
+  watchForTalk(false);
+  if (monStream) monStream.getTracks().forEach(t => t.stop());
+});
 $("#speak").onclick = () => speak(
   "Helix voice core online. Press the button at any time and I will stop talking " +
   "mid-sentence and listen to your new command instead of finishing this one.");

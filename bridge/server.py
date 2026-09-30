@@ -285,14 +285,18 @@ TTS_DIR = os.path.expanduser("~/.local/share/helix-tts")
 EDGE_TTS = os.path.expanduser("~/.local/share/helix-tts-venv/bin/edge-tts")
 PIPER = os.path.join(TTS_DIR, "piper", "piper")
 PIPER_LIB = os.path.join(TTS_DIR, "piper")
-PIPER_MODEL = os.path.join(TTS_DIR, "voices", "en_GB-alba-medium.onnx")
+PIPER_MODEL = os.path.join(TTS_DIR, "voices", "en_GB-alan-medium.onnx")
 ESPEAK = "espeak-ng"
 
-# British voices, per engine. edge-tts ids are Microsoft's; Piper's is a Scottish
-# female. Both free, both with no API key.
+# Male voices throughout, per the human's preference for a deep voice. The previous
+# set was female (Sonia/Alba) on both engines, so offline speech was female too --
+# switching only edge would have left Piper disagreeing with it.
+# edge-tts ids are Microsoft's; Piper's is a British male model. Both free, no key.
+# Deeper alternatives if Thomas ever sounds too flat: en-GB-RyanNeural (younger),
+# en_US-ChristopherNeural (news-reader authority), en_GB-northern_english_male-medium.
 TTS_VOICES = {
-    "edge":   {"en": "en-GB-SoniaNeural", "ur": "ur-PK-UzmaNeural"},
-    "piper":  {"en": "en_GB-alba-medium",  "ur": None},          # no Urdu model
+    "edge":   {"en": "en-GB-ThomasNeural", "ur": "ur-PK-AsadNeural"},
+    "piper":  {"en": "en_GB-alan-medium",  "ur": None},          # no Urdu model
     "espeak": {"en": "en-gb",              "ur": "ur"},
 }
 

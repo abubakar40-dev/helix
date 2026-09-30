@@ -1791,3 +1791,54 @@ deferred and raised with the human instead of started, because:
 
 Also unchanged: **barge-in "talk over"** still cannot be tested — this box has no
 microphone, which is hardware, not software.
+
+---
+
+## 2026-09-30 — The gods-eye-view patch made checkable instead of memorable
+
+`gods-eye-view/build/vite.js` carries a local edit removing `X-Frame-Options: DENY` and
+CSP `frame-ancestors 'none'`, because the Helix World Monitor iframes it and those headers
+refuse exactly that. Until now the only record of that was **a sentence in this log**,
+which is not a mechanism.
+
+The failure mode is nasty: a `git pull` or `git checkout` in that repo drops the edit, and
+the symptom is a silently blank globe panel with no error in any log.
+
+`tools/check-globe-patch.sh` replaces the note with a check:
+
+```
+./tools/check-globe-patch.sh          report only, non-zero if missing
+./tools/check-globe-patch.sh --fix    re-apply if missing, then report
+```
+
+It is idempotent (it short-circuits on a marker comment), backs up before editing, and
+refuses to touch the file if no header lines matched rather than silently mangling it.
+`GODSEYE_REPO` overrides the path.
+
+### Tested all three states, not just the happy one
+1. patched → `OK`, exit 0
+2. `git checkout build/vite.js` → `MISSING`, exit 1, explains the blank panel
+3. `--fix` → re-applies, exit 0; **running again is a clean no-op**
+
+Verified the output is not just *different* but correct:
+
+- `node --check build/vite.js` → **syntax OK** (a regex edit into a JS file earns this)
+- the patched region reads `headers: { }` with no framing headers
+- `curl -I` on the served app returns **no** `X-Frame-Options` and no `Content-Security-Policy`
+- the globe service is `active`, HTTP 200 on `127.0.0.1:4173`
+
+**A blemish I caught in my own first version:** the regex left the upstream comment
+*"These headers protect the document containing Provider Settings"* sitting above an empty
+object — now false, and exactly the kind of thing that wastes someone's time. Added a
+rule to strip it.
+
+### End-to-end, in the browser
+Loaded `http://127.0.0.1:8787/world-monitor/` and walked the frames:
+
+```
+World Monitor page  -> iframe src="http://127.0.0.1:4173/?cb=1"  640x627
+globe frame         -> title "God's Eye View", 7 canvases, main one 640x627
+```
+
+Cross-origin reachable, canvases sized to the frame. The patch genuinely works, and the
+script restores it if a pull ever breaks it.

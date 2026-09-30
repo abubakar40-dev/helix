@@ -32,7 +32,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 UI_DIR = os.path.join(HERE, "..", "ui")
 # Explicit allowlist, not a generic static server: no path traversal, no surprises.
 PAGES = {
-    "/": "agent-town/index.html",
+    "/": "shell/index.html",
+    "/agent-town/": "agent-town/index.html",
     "/world-monitor/": "world-monitor/index.html",
     "/voice-core/": "voice-core/index.html",
 }

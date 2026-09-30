@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Helix</title>
+<style>
+  :root{--bg:#0b0e13;--bar:#131820;--line:#232a33;--text:#e6edf3;--dim:#8b949e;--accent:#58a6ff}
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);display:flex;flex-direction:column;overflow:hidden;
+       font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+  nav{display:flex;align-items:center;gap:8px;padding:0 14px;height:44px;flex:none;
+      background:var(--bar);border-bottom:1px solid var(--line)}
+  .brand{font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin-right:8px}
+  .brand b{color:var(--text);font-weight:600}
+  button.tab{background:transparent;color:var(--dim);border:1px solid transparent;border-radius:7px;
+            padding:6px 14px;cursor:pointer;font:inherit;font-size:12px;letter-spacing:.06em}
+  button.tab:hover{color:var(--text);background:#1a212b}
+  button.tab[aria-selected=true]{color:var(--text);background:#1a212b;border-color:var(--line)}
+  button.tab[aria-selected=true]::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
+      background:var(--accent);margin-right:8px;vertical-align:1px}
+  .spacer{margin-left:auto}
+  #where{color:var(--dim);font-size:11px}
+  #stage{flex:1;position:relative;min-height:0}
+  iframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:var(--bg)}
+</style>
+</head>
+<body>
+<nav>
+  <span class="brand"><b>HELIX</b></span>
+  <button class="tab" role="tab" data-panel="agent-town"   aria-selected="true">Agent Town</button>
+  <button class="tab" role="tab" data-panel="voice-core"   aria-selected="false">Voice Core</button>
+  <button class="tab" role="tab" data-panel="world-monitor" aria-selected="false">World Monitor</button>
+  <span class="spacer"></span>
+  <span id="where"></span>
+</nav>
+<div id="stage"><iframe id="view" title="Helix panel" allow="fullscreen; geolocation; microphone"></iframe></div>
+
+<script>
+// One window, three panels. The panels are framed, not rebuilt: each keeps its own
+// markup and its own root-relative fetches, which still resolve to the bridge because
+// the frame is same-origin. Changing a panel means changing that panel, not this file.
+//
+// Only the visible panel is loaded. Voice Core runs a WebGL orb and World Monitor runs
+// a WebGL globe; keeping both alive with Agent Town's live SSE stream would cost about
+// a gigabyte on a 6.9 GB laptop. Switching blanks the frame first so the old WebGL
+// context is actually released rather than just hidden.
+const PANELS = ["agent-town", "voice-core", "world-monitor"];
+const TITLES = { "agent-town": "Agent Town", "voice-core": "Voice Core", "world-monitor": "World Monitor" };
+const frame = document.getElementById("view");
+const where = document.getElementById("where");
+
+function show(name, push) {
+  if (!PANELS.includes(name)) name = PANELS[0];
+  for (const b of document.querySelectorAll("button.tab"))
+    b.setAttribute("aria-selected", String(b.dataset.panel === name));
+  frame.src = "about:blank";                       // release the previous WebGL context
+  const url = "/" + name + "/";
+  setTimeout(() => { frame.src = url; }, 30);
+  where.textContent = url;
+  if (push) location.hash = "/" + name;
+}
+document.querySelectorAll("button.tab").forEach(b => b.onclick = () => show(b.dataset.panel, true));
+addEventListener("hashchange", () => show(location.hash.replace(/^#\/?/, "").replace(/\/$/, ""), false));
+show(location.hash.replace(/^#\/?/, "").replace(/\/$/, "") || PANELS[0], false);
+</script>
+</body>
+</html>

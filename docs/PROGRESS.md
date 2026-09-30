@@ -1199,3 +1199,51 @@ in-page poller *before* dispatching so the new desk was caught live:
 ```
 
 Eight agents live: helix, research, pc, dev, vision, comm, sysmon, career.
+
+---
+
+## 2026-09-30 — Single-window shell for the three panels
+
+`/` is now one window with tabs for **Agent Town / Voice Core / World Monitor** — the
+"one window" shape the reference screenshots implied, without its name or branding.
+
+### How it was built: framed, not rebuilt
+`ui/shell/index.html` is ~70 lines and **none of the three panels were modified.**
+Each is loaded into one `<iframe>`; they keep their own markup, their own `100vh`
+layout, and their own root-relative fetches, which keep resolving to the bridge because
+the frame is same-origin (`/state`, `/events`, `/cortex`, `/headlines`, `/say`, `/stt`,
+`/tts` all verified working from inside the frame). The individual panels stay reachable
+at `/agent-town/`, `/voice-core/`, `/world-monitor/` for debugging.
+
+The ladder made this obvious in hindsight: one shell that *contained* the three panels
+would have meant rewriting three pages and their two WebGL stacks into a single
+document. Framing reuses them literally.
+
+### Only the active panel is loaded — deliberately
+Voice Core runs a WebGL orb and World Monitor runs a WebGL globe, *and World Monitor
+frames a third WebGL app*. Keeping all three alive alongside Agent Town's open SSE stream
+would cost roughly a gigabyte on a 6.9 GB laptop. Switching blanks the frame
+(`about:blank`) before setting the new src so the old WebGL context is genuinely
+released rather than merely hidden. Hash routing (`#/voice-core`) makes tabs linkable,
+and `hashchange` handles back/forward.
+
+### Verified, same standard as before
+| panel | inside the shell |
+|---|---|
+| Agent Town | 8 desks with live statuses, **25 live events**, tab correctly selected |
+| Voice Core | orb canvas **460x441**, 4 node links, `memory=0 skills=12 soul=8 settings=8` |
+| World Monitor | **46 stories**, globe frame 440x437, real `bbc.co.uk` top story |
+
+- **Zero console errors** on the shell and on every panel across the whole run.
+- The Voice Core node counts read **`soul=8 settings=8`** — up from 6 — because
+  `sysmon` and `career` were added. Proof it is reading live filesystem state inside the
+  frame, not a cached render.
+- The globe is **two frames deep** (shell → world-monitor → globe) and still works:
+  **117 real ArcGIS imagery + reearth terrain tile requests** observed.
+- The nested **2D/3D toggle still works** from inside the shell — clicked it and the
+  inner globe `src` switched to the top-down hash.
+- **Cycling all three tabs four times** left no errors and memory *recovered* from
+  1.5 GB to 2.1 GB available — the WebGL release actually works, which was the whole
+  point of the blank-then-load design.
+- Deep link `/#/world-monitor` loads straight into World Monitor with the right tab
+  selected and 46 stories live.

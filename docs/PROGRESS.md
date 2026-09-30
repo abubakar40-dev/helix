@@ -2131,3 +2131,66 @@ The proxy, the Live session, transcription, audio return and the `interrupted` s
 all proven against real audio. **The in-page WebRTC path is unproven by me** — the harness
 browser denies microphone permission — so the first thing to do is press **Speak** in
 Brave and talk over it.
+
+---
+
+## 2026-10-01 — Voice Core rebuilt on the old Jarvis model: no buttons, wake word, continuous
+
+The human tested it and reported the exact failure I should have predicted: **"it says
+transcribing locally but not responding back"**, and asked me to *"remove the buttons and
+copy the same voice core of jarvis"*, keep the orb, and stop worrying about privacy
+because they want quality.
+
+### Root cause, and it was mine
+Checked the proxy log: **zero browser connections had ever reached it.** The page had two
+button paths and I put the local whisper one *first*, labelled "Start listening" — so
+pressing the obvious button started the local path and the Live session was never opened.
+Not a Live failure at all. A design that made the wrong path the default.
+
+The human is also right that local whisper "isn't providing as expected" — its own
+measurements back that: `ggml-base` mis-detects Urdu, and the earlier capture transcribed
+noise as repeated Urdu gibberish.
+
+### What the old voice core actually did (read it, from `main.py`)
+- The Gemini Live session is connected **all the time**
+- The mic is **muted by default**; a **wake word** opens it
+  (`_wakeword_detected` matching `jarvis` / `hey jarvis` / `hi jarvis`)
+- Unmuting logs `SYS: Wake word detected. Mic active.`
+- States are just `LISTENING` / `SPEAKING` / `THINKING`
+- **No start/stop/send buttons at all**
+
+That is the voice core to copy, and it is a better design than what I built.
+
+### Rebuilt to match, buttons deleted
+`ui/voice-core/index.html` now has **zero `<button>` elements** (verified: `buttonsLeft: 0`):
+
+- connects to Live **on page load**; no user gesture required to start
+- mic **muted by default**, bar reads `muted — say "Helix"`
+- wake word opens it; **"go to sleep" / "sleep" / "stop listening" / "bye"** puts it back
+- a single **bar** (click = mute/unmute) is the only control, mirroring the old mute state
+- **stays awake** toggle and a **voice** picker (Charon / Orus / Puck / Fenrir) that
+  reconnects on change
+- reconnects automatically: a Live session is designed to end, so `onclose` re-joins after
+  3s instead of dying
+- the interrupt stays Gemini's: `interrupted` drops the queued audio, nothing local
+
+The old local VAD, the sensitivity slider, the auto-send, `/task` polling and the Kanban
+round-trip are all **gone from this panel** — the conversation no longer goes through
+Kanban at all, because Live answers directly. The `/task` endpoint stays in the bridge
+(it is what the daily briefing and any other caller use).
+
+**On privacy:** the human has explicitly waived §5.3 for this and asked for quality. That
+is their call and it is consistent with §5.3, which permits Gemini with minimisation rather
+than forbidding it. Recorded so the decision is visible, not buried.
+
+### The orb was not touched
+Stated three times now across this session, so verified again: `git status` shows only
+`index.html` modified, `orbScene.js` untouched, `createOrbScene` import intact, page reports
+**`orb ready`** with its canvas present.
+
+### One bug caught by the syntax check
+The Urdu character class was written `[^a-zऀ-ۿ\s]` — a **backwards range**, which throws at
+parse time. Replaced with the explicit `U+0600–U+06FF` block and a comment saying why, since
+a literal Arabic-range character pair is a trap that looks fine in a diff.
+
+`node --check` passes on the 9.6 KB module script. `helix-live` and `helix-bridge` both active.

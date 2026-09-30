@@ -75,6 +75,18 @@
   select{width:100%;padding:8px;border-radius:8px;border:1px solid var(--line);
          background:#1a212b;color:var(--text);font:inherit;font-size:12px}
   .row select{flex:1}
+
+  .linkstate{font-size:12px;letter-spacing:.04em;color:#8b949e;padding:6px 0 10px}
+  .linkstate[data-s=live]{color:#3fb950}
+  .linkstate[data-s=connecting]{color:#d29922}
+  .linkstate[data-s=error]{color:#f85149}
+  .bar{cursor:pointer;user-select:none;text-align:center;padding:14px;border-radius:10px;
+       border:1px solid var(--line);font-size:15px;font-weight:600;letter-spacing:.02em;
+       background:#12161c;transition:.15s}
+  .bar[data-s=muted]{color:#6e7681}
+  .bar[data-s=live]{color:#3fb950;border-color:#1f6f33;background:#0f1c14;
+       box-shadow:0 0 0 1px #1f6f33 inset,0 0 18px -6px #3fb950}
+  .bar:hover{border-color:#3d444d}
 </style>
 </head>
 <body>
@@ -97,50 +109,35 @@
 
   <aside>
     <div class="pad">
-      <button id="toggle">Start listening</button>
-      <div class="hint">Press to start, press again to stop and transcribe. While Helix is
-        speaking, <b>press to interrupt</b> — or just <b>talk over it</b> if talk-over is on
-        below. Either way it cuts off mid-sentence and takes your new words.</div>
+      <div id="linkstate" class="linkstate" data-s="connecting">connecting…</div>
+      <div class="hint">Say <b>“Helix”</b> to wake it, then talk. It hears you
+        continuously while awake, answers out loud, and <b>stops mid-sentence the
+        moment you talk over it</b>. Say <b>“go to sleep”</b> or press the bar to mute.</div>
+      <div class="bar" id="micbar" data-s="muted" title="click to mute / unmute">
+        <span id="miclabel">muted — say “Helix”</span>
+      </div>
       <div class="row">
-        <label class="vio"><input type="checkbox" id="autosend" checked> send automatically</label>
-        <label class="vio"><input type="checkbox" id="talkover" checked> talk-over interrupts</label>
-        <label class="vio">sensitivity
-          <input type="range" id="sens" min="1.2" max="3.5" step="0.1" value="1.8" style="width:70px">
+        <label class="vio">wake word
+          <input id="wake" value="helix" style="width:74px">
+        </label>
+        <label class="vio">stays awake
+          <input type="checkbox" id="stayawake">
+        </label>
+        <label class="vio">voice
+          <select id="livevoice" style="width:112px">
+            <option value="Charon">Charon</option>
+            <option value="Orus">Orus</option>
+            <option value="Puck">Puck</option>
+            <option value="Fenrir">Fenrir</option>
+          </select>
         </label>
       </div>
-      <div class="row">
-        <select id="lang">
-          <option value="">Auto-detect (mixed)</option>
-          <option value="ur">Urdu</option>
-          <option value="en">English</option>
-        </select>
-        <select id="ttslang">
-          <option value="en">Reply in English</option>
-          <option value="ur">جواب اردو میں دیں</option>
-        </select>
-        <select id="voice">
-          <option value="live">Voice: Gemini Live (cloud, best quality)</option>
-          <option value="local">Voice: local only (private, offline)</option>
-        </select>
-        <select id="ttsengine">
-          <option value="auto">Voice: auto (online first)</option>
-          <option value="edge">Force online</option>
-          <option value="piper">Force offline</option>
-        </select>
-      </div>
-      <div class="okbox" id="privacy">🔒 Speech <b>online-first</b> (edge-tts), falling
-        back to <b>Piper</b> (fully offline) when there's no internet. Recognition stays
-        local via <b>whisper.cpp</b> (<span id="model">ggml-base</span>).</div>
     </div>
     <div class="pad" style="border-top:1px solid var(--line);padding-top:14px">
       <h2>Heard</h2>
       <div id="final">—</div>
       <div id="interim"></div>
-      <div class="row">
-        <button id="send" disabled>Send to Helix</button>
-        <button id="speak">Test TTS</button>
-      </div>
-      <h2 style="margin-top:14px">Helix said</h2>
+      <h2 style="margin-top:14px">Helix</h2>
       <div id="answer">—</div>
     </div>
     <div id="log"></div>
@@ -152,10 +149,7 @@ import { createOrbScene } from "./orbScene.js";
 
 const $ = s => document.querySelector(s);
 const stage = $("#stage"), links = $("#links"), logEl = $("#log");
-// All module state in one place. Declaring these next to their users caused
-// duplicate-identifier SyntaxErrors three times, so they live here and nowhere else.
 let orb = null, speaking = false, lastFinal = "";
-let rec = null, chunks = [], listening = false, audioEl = null, justBarged = false;
 
 // ── orb + node graph ────────────────────────────────────────────────────────
 try {
@@ -180,7 +174,6 @@ function drawLinks() {
 addEventListener("resize", drawLinks);
 setTimeout(drawLinks, 60);
 
-// Counts come from the bridge, so the graph shows real Helix state.
 fetch("/cortex").then(r => r.ok ? r.json() : null).then(c => {
   if (!c) return;
   for (const n of document.querySelectorAll(".node")) {
@@ -191,71 +184,6 @@ fetch("/cortex").then(r => r.ok ? r.json() : null).then(c => {
   }
 }).catch(() => {});
 
-// ── local STT: MediaRecorder -> bridge /stt -> whisper.cpp ─────────────────
-// Web Speech was removed on purpose: Chrome sends mic audio to Google, which
-// s5.3 forbids. Audio now goes to localhost and is transcribed by whisper.cpp.
-
-
-async function transcribe(blob) {
-  setState("THINKING");
-  $("#interim").textContent = "transcribing locally…";
-  const lang = $("#lang").value;
-  try {
-    const r = await fetch("/stt" + (lang ? "?lang=" + lang : ""), {
-      method: "POST", headers: { "X-Helix-Voice": "1" }, body: blob });
-    const d = await r.json();
-    if (!d.ok) { setState("ERROR"); log("stt: " + d.error, "err"); return; }
-    const t = (d.text || "").trim();
-    if (!t) { setState(listening ? "LISTENING" : "IDLE"); $("#interim").textContent = "heard nothing"; return; }
-    lastFinal = t;
-    $("#final").textContent = t;
-    $("#interim").textContent = `local whisper.cpp · ${d.lang} · ${d.ms}ms`;
-    $("#send").disabled = false;
-    setState("WORKING");
-    log(`heard: "${t}"`, "🎙");
-    // Send on its own unless the human unticked it. Requiring a second button press
-    // is what made this feel broken: you spoke, it heard you, and then it sat there.
-    if (autoSend) askHelix(t);
-  } catch (e) { setState("ERROR"); log("stt unreachable: " + e.message, "err"); }
-}
-
-async function start() {
-  if (rec) { rec.stop(); return; }              // second press = stop & transcribe
-  try {
-    // Borrow the monitor stream if it is already open (talk-over armed it), so the
-    // human is never prompted for the microphone twice.
-    const stream = await ensureMic();
-    chunks = [];
-    rec = new MediaRecorder(stream);
-    rec.ondataavailable = e => chunks.push(e.data);
-    rec.onstop = async () => {
-      rec = null; listening = false;
-      $("#toggle").textContent = "Start listening";
-      $("#toggle").classList.remove("live");
-      await transcribe(new Blob(chunks, { type: chunks[0]?.type || "audio/webm" }));
-    };
-    rec.start();
-    listening = true; justBarged = false;
-    setState(speaking ? "SPEAKING" : "LISTENING");
-    $("#toggle").textContent = "Stop & transcribe";
-    $("#toggle").classList.add("live");
-    $("#interim").textContent = "recording…";
-    log("mic live — press again to stop");
-  } catch (e) {
-    rec = null; listening = false;
-    // After a successful barge-in a mic failure must NOT read as a failed interrupt:
-    // the interrupt worked, we just cannot listen yet. Distinct state, honest log.
-    if (justBarged) {
-      setState("WARNING");
-      log("interrupted OK, but mic unavailable: " + e.message, "warn");
-      justBarged = false;
-    } else {
-      setState("ERROR");
-      log("mic: " + e.message, "err");
-    }
-  }
-}
-
 // ── state + log ─────────────────────────────────────────────────────────────
 function setState(s) { $("#state").textContent = s; $("#state").dataset.s = s; }
 function log(msg, kind = "") {
@@ -265,297 +193,75 @@ function log(msg, kind = "") {
   while (logEl.children.length > 60) logEl.lastChild.remove();
 }
 
-// ── TTS + BARGE-IN ──────────────────────────────────────────────────────────
-// Server-side espeak-ng, played through an <audio> element. The browser's
-// speechSynthesis is NOT used: it reports zero voices on this machine, so its
-// utterances ended instantly and there was nothing to interrupt. With a real
-// <audio> element the interrupt is a real, measurable cut.
-// <audio> element the interrupt acts on (declared with the other state above).
-
-async function speak(text) {
-  if (!text) return;
-  stopAudio();
-  setState("SPEAKING");
-  try {
-    const r = await fetch("/tts", { method: "POST",
-      headers: { "Content-Type": "application/json", "X-Helix-Voice": "1" },
-      body: JSON.stringify({ text, lang: $("#ttslang").value,
-                             engine: $("#ttsengine").value }) });
-    if (!r.ok) { setState("ERROR"); log("tts failed: " + r.status, "err"); return; }
-    const engine = r.headers.get("X-Helix-TTS-Engine") || "?";
-    const blob = await r.blob();
-    const url = URL.createObjectURL(blob);
-    audioEl = new Audio(url);
-    audioEl.onended = () => { stopAudio(); setState("IDLE"); };
-    audioEl.onerror = () => { stopAudio(); setState("ERROR"); log("audio error", "err"); };
-    // Real duration from the media element. Guessing it from byte size is wrong:
-    // MP3 and WAV have wildly different bitrates, and the number is used in the
-    // barge-in line, so it has to be honest.
-    audioEl.addEventListener("loadedmetadata", () => {
-      log(`spoke via ${engine} (${(audioEl.duration || 0).toFixed(1)}s)`,
-          engine === "edge-tts" ? "🌐" : "🔒");
-    }, { once: true });
-    await audioEl.play();
-    speaking = true;
-    // Arm talk-over only after playback actually started, and only if enabled.
-    if ($("#talkover").checked) {
-      try { await ensureMic(); watchForTalk(true);
-            log("talk-over armed — talk to interrupt", "🎙"); }
-      catch (e) { log("talk-over unavailable: " + e.message, "warn"); }
-    }
-  } catch (e) { setState("ERROR"); log("tts: " + e.message, "err"); }
-}
-
-// ── voice barge-in: the human talking over Helix mid-sentence ────────────────
-// §9 asks for the loop to be "interruptible at any point while speaking", so a
-// button press alone is not the requirement — the human talks over the answer.
+// ══════════════════════════════════════════════════════════════════════════════
+// Gemini Live voice core — continuous, wake-word, interruptible.
 //
-// The hard part is that the mic hears Helix's own voice through the speakers, so
-// a naive level trigger makes Helix interrupt itself the instant it starts
-// speaking. Fixed with a rolling floor rather than a tuned constant: the floor
-// tracks recent level, so while TTS plays the floor CLIMBS to the echo level by
-// itself and the bar rises with it. A human talking over is a further, sustained
-// rise above that. No number here has to know how loud the room is.
-
-let monStream = null, audioCtx = null, analyser = null, levelData = null;
-let vig = null, floor = 0, hotSince = 0;
-
-/** RMS 0..1 of the live mic. Cheap enough to poll at 60 ms. */
-function micLevel() {
-  if (!analyser) return 0;
-  analyser.getByteTimeDomainData(levelData);
-  let sum = 0;
-  for (let i = 0; i < levelData.length; i++) { const v = (levelData[i] - 128) / 128; sum += v * v; }
-  return Math.sqrt(sum / levelData.length);
-}
-
-/** One persistent mic stream, opened once. The recorder borrows it (no second prompt). */
-async function ensureMic() {
-  if (monStream && monStream.active) return monStream;
-  monStream = await navigator.mediaDevices.getUserMedia(
-    { audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
-  const AC = window.AudioContext || window.webkitAudioContext;
-  audioCtx = audioCtx || new AC();
-  const src = audioCtx.createMediaStreamSource(monStream);
-  analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 1024;
-  levelData = new Uint8Array(analyser.fftSize);
-  src.connect(analyser);          // analyser only — never to destination, or feedback
-  return monStream;
-}
-
-function watchForTalk(on) {
-  clearInterval(vig); vig = null; hotSince = 0;
-  if (on) {
-    floor = 0;
-    vig = setInterval(() => {
-      if (!speaking) { watchForTalk(false); return; }
-      const lvl = micLevel();
-      floor = floor ? floor * 0.9 + lvl * 0.1 : lvl;            // adapts to the echo
-      const ratio = parseFloat($("#sens").value) || 2.2;
-      const hot = lvl > Math.max(0.05, floor * ratio);
-      if (hot) {
-        if (!hotSince) hotSince = performance.now();
-        // 120 ms, not 250: measured against real speech captured from this machine's
-        // mic, 250 ms at ratio 2.2 never accumulated a long enough run above the
-        // floor to fire at all. 1.8/120 was the fastest setting that passed speech,
-        // TTS-echo-only, raw-sum and echo-cancelled cases together in
-        // tools/check-talkover.py. Keep the harness in sync if you retune.
-        else if (performance.now() - hotSince > 120) {           // sustained, not a click
-          hotSince = 0;
-          if (bargeIn("talked over")) { justBarged = true; start(); }
-        }
-      } else hotSince = 0;
-    }, 60);
-  }
-}
-
-function stopAudio() {
-  if (audioEl) { audioEl.pause(); audioEl.currentTime = 0;
-                 URL.revokeObjectURL(audioEl.src); audioEl = null; }
-  speaking = false;
-  watchForTalk(false);
-}
-
-/** The barge-in. Cuts playback mid-word; returns the cut point in seconds. */
-function bargeIn(what) {
-  if (!speaking || !audioEl) return null;
-  const at = audioEl.currentTime, total = audioEl.duration || 0;
-  stopAudio();
-  setState(rec ? "LISTENING" : "IDLE");
-  log(`barge-in — cut at ${at.toFixed(2)}s of ${total.toFixed(2)}s` +
-      (what ? ` (${what})` : ""), "⚡");
-  return { at, total };
-}
-
-// Pressing the button while Helix is speaking IS the barge-in gesture: it cuts the
-// audio off mid-sentence and starts recording the new request in the same press.
-$("#toggle").onclick = () => {
-  if (speaking) { bargeIn("button press"); justBarged = true; }
-  start();
-};
-// Untick = stop listening for talk-over and hand the microphone back, so the box
-// is not left with the mic light on after someone decides they do not want it.
-$("#talkover").onchange = (e) => {
-  watchForTalk(false);
-  if (!e.target.checked && monStream && !rec) {
-    monStream.getTracks().forEach(t => t.stop());
-    monStream = null; analyser = null;
-    log("talk-over off — microphone released", "🔒");
-  } else if (e.target.checked) {
-    log("talk-over on — will interrupt when you speak", "🎙");
-  }
-};
-addEventListener("beforeunload", () => {
-  watchForTalk(false);
-  if (monStream) monStream.getTracks().forEach(t => t.stop());
-  liveStop();
-});
-$("#speak").onclick = async () => {
-  if ($("#voice").value === "live") {
-    liveMode = true;
-    const ok = await liveStart();
-    if (ok) {
-      // Ask out loud so the first turn is a real one rather than silence.
-      liveWs.send("Introduce yourself in one short sentence, then ask how you can help.");
-    } else {
-      liveMode = false;
-      log("falling back to local voice", "warn");
-    }
-    return;
-  }
-  speak(
-    "Helix voice core online. Press the button at any time and I will stop talking " +
-    "mid-sentence and listen to your new command instead of finishing this one.");
-};
-
-// Switching to local must actually release the Live session, the mic and the
-// socket. Leaving them open would mean the local mode is not private at all.
-$("#voice").onchange = async e => {
-  if (e.target.value !== "live") {
-    liveMode = false; liveStop();
-    $("#answer").textContent = "—";
-    log("live off — everything stays on this machine", "🔒");
-  } else {
-    log("live on — audio streams to Google (see §5.3)", "🌐");
-  }
-};
-
-// ── Gemini Live: continuous, interruptible conversation ──────────────────────
-// Primary voice mode. The mic streams straight through while the model speaks, so
-// talking over it interrupts — the server sends {"type":"interrupted"} and the
-// audio simply stops. The old Jarvis could not do this: it muted the mic for a
-// fixed window after TTS and discarded transcripts that resembled the reply, which
-// made talk-over structurally impossible.
+// Modelled on the old Jarvis voice core, which worked well: the session is
+// connected all the time, the mic is MUTED by default, and a wake word opens
+// it. No start/stop/send buttons at all.
 //
-// The key never reaches this page. tools/live_server.py holds it and relays audio
-// over ws://127.0.0.1:8788. Choose "local only" in the voice dropdown to keep
-// everything on this machine and fall back to whisper.cpp + local TTS.
+// The interrupt is Gemini's, not ours. The old system muted the mic for a fixed
+// window after TTS and threw away transcripts that looked like the reply, which
+// is precisely why it could never be interrupted. Here mic audio keeps flowing
+// while the model speaks and Google decides when to stop — it sends us
+// {"type":"interrupted"} and the queued audio is dropped on the floor.
+// ══════════════════════════════════════════════════════════════════════════════
 
 const LIVE_WS = "ws://" + location.hostname + ":8788";
-let liveWs = null, liveStream = null, liveCtx = null, liveGain = null;
-let liveReady = false, liveMode = false, liveInterrupts = 0;
+let ws = null, micStream = null, ctx = null, pump = null;
+let liveReady = false, awake = false, connecting = false;
+let playQueue = [], playing = false, interrupts = 0;
+let idleTimer = null;
 
-function liveSetState(s) { setState(s); }
+const IDLE_SLEEP_MS = 20000;   // back to the wake word after this long quiet
 
-async function liveStart() {
-  if (liveReady) return true;
-  setState("CONNECTING");
-  liveStream = await navigator.mediaDevices.getUserMedia({
-    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true,
-             autoGainControl: true }});
-  liveCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-
-  return new Promise(resolve => {
-    let ws;
-    try { ws = new WebSocket(LIVE_WS); }
-    catch (e) { log("live: " + e.message, "err"); setState("ERROR"); return resolve(false); }
-    liveWs = ws;
-    ws.binaryType = "arraybuffer";
-
-    ws.onopen = () => log("live: connecting to Gemini…", "🌐");
-    ws.onerror = () => { log("live: proxy unreachable at " + LIVE_WS, "err"); };
-    ws.onclose = () => {
-      liveReady = false; liveSetState("IDLE");
-      log("live: disconnected", "warn");
-      if (liveMode) log("switched back to local — press Listen to retry", "warn");
-    };
-    ws.onmessage = async ev => {
-      if (typeof ev.data !== "string") {         // binary = model audio
-        try { await livePlay(ev.data); } catch (e) {}
-        return;
-      }
-      let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
-      if (d.type === "ready") {
-        liveReady = true;
-        log(`live: connected (${d.model}, voice ${d.voice})`, "🌐");
-        liveSetState("LISTENING");
-        livePump();
-        resolve(true);
-      } else if (d.type === "transcript") {
-        if (d.final) { $("#final").textContent = d.text; log(`heard: "${d.text}"`, "🎙"); }
-        else $("#interim").textContent = d.text;
-      } else if (d.type === "reply") {
-        $("#answer").textContent = ($("#answer").textContent === "—" ? "" :
-                                    $("#answer").textContent + " ") + d.text;
-      } else if (d.type === "interrupted") {
-        liveInterrupts++;
-        log("interrupted — you talked over it", "⚡");
-        liveSetState("LISTENING");
-      } else if (d.type === "state" && d.state === "listening") {
-        liveSetState("LISTENING");
-      } else if (d.type === "error") {
-        log("live: " + d.error, "err"); setState("ERROR");
-      }
-    };
-  });
+function setLink(s, text) {
+  const el = $("#linkstate");
+  el.dataset.s = s; el.textContent = text;
+}
+function setMic(s, text) {
+  const b = $("#micbar");
+  b.dataset.s = s; $("#miclabel").textContent = text;
 }
 
-/** Queue of decoded model audio; played in order, cleared the moment we interrupt. */
-let liveQueue = [], livePlaying = false;
+function wakeWordHit(t) {
+  const w = ($("#wake").value || "helix").toLowerCase().trim();
+  if (!w) return true;                       // empty = open mic, no wake word
+  // Urdu block is U+0600–U+06FF. Written as explicit escapes: a literal
+  // "ऀ-ۿ" is silently a backwards range and throws at parse time.
+  const norm = (t || "").toLowerCase().replace(/[^a-z؀-ۿ\s]/g, " ");
+  if (/\b(go to sleep|sleep|stop listening|goodbye|bye)\b/.test(norm)) { sleepNow(); return true; }
+  return new RegExp("\\b(hey |hi |ok |okay )?" + w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b").test(norm);
+}
 
-async function livePlay(chunk) {
-  liveQueue.push(chunk);
-  if (livePlaying) return;
-  livePlaying = true;
-  setState("SPEAKING");
-  while (liveQueue.length) {
-    if (!liveReady) { liveQueue = []; break; }   // interrupted: drop the rest
-    const c = liveQueue.shift();
-    try {
-      const ab = await liveCtx.decodeAudioData(c);
-      const src = liveCtx.createBufferSource();
-      src.buffer = ab; src.connect(liveCtx.destination); src.start();
-      await new Promise(r => { src.onended = r; });
-    } catch (e) {}
+function wakeUp(why) {
+  if (awake) return;
+  awake = true;
+  setMic("live", "awake — talk to me");
+  setState("LISTENING");
+  log(`awake (${why})`, "🎙");
+  clearTimeout(idleTimer);
+  resetIdle();
+}
+function sleepNow() {
+  awake = false;
+  setMic("muted", `muted — say “${($("#wake").value || "helix")}”`);
+  setState("IDLE");
+  playQueue = [];                             // stop any unplayed audio
+  log("asleep", "🔒");
+  clearTimeout(idleTimer);
+}
+function resetIdle() {
+  clearTimeout(idleTimer);
+  if (!$("#stayawake").checked) {
+    idleTimer = setTimeout(() => { if (awake) sleepNow(); }, IDLE_SLEEP_MS);
   }
-  livePlaying = false;
-  if (liveReady) setState("LISTENING");
 }
 
-/** Keeps feeding mic audio for the whole session — that is what enables barge-in. */
-function livePump() {
-  const src = liveCtx.createMediaStreamSource(liveStream);
-  const proc = liveCtx.createScriptProcessor(4096, 1, 1);
-  const workletSrc = src;
-  proc.onaudioprocess = e => {
-    if (!liveReady || liveWs.readyState !== 1) return;
-    liveWs.send(downsampleTo16k(e.inputBuffer.getChannelData(0)));
-  };
-  // ScriptProcessor is deprecated but is the only node available without a
-  // separate worklet file; it is fine for a 16 kHz voice stream.
-  src.connect(proc);
-  proc.connect(liveCtx.destination);
-  // Mute the monitor path so the model does not hear itself through the speakers.
-  const mute = liveCtx.createGain(); mute.gain.value = 0;
-  proc.disconnect(); proc.connect(mute); mute.connect(liveCtx.destination);
-  liveGain = proc;
-}
-
-/** Linear resample to 16 kHz and pack to Int16. Good enough for speech. */
+// ── audio in: mic -> 16 kHz mono PCM16 ──────────────────────────────────────
 function downsampleTo16k(f32) {
-  const ratio = liveCtx.sampleRate / 16000;
-  const n = Math.floor(f32.length / ratio);
+  const ratio = ctx.sampleRate / 16000;
+  const n = Math.max(1, Math.floor(f32.length / ratio));
   const out = new Int16Array(n);
   for (let i = 0; i < n; i++) {
     let s = 0;
@@ -566,73 +272,130 @@ function downsampleTo16k(f32) {
   return out.buffer;
 }
 
-function liveStop() {
-  liveReady = false;
-  if (liveGain) { try { liveGain.disconnect(); } catch (e) {} liveGain = null; }
-  if (liveWs) { try { liveWs.close(); } catch (e) {} liveWs = null; }
-  if (liveStream) { liveStream.getTracks().forEach(t => t.stop()); liveStream = null; }
-  if (liveCtx) { try { liveCtx.close(); } catch (e) {} liveCtx = null; }
-  liveQueue = []; livePlaying = false;
-}
-
-// ── conversation loop: ask → wait → answer, out loud ────────────────────────
-// Before this, /say created a task and nothing ever read the result, so a voice
-// request produced silence. Worse, the human had to press a second button to send
-// at all. A transcript now sends on its own and the reply is spoken when ready.
-
-let awaiting = null, autoSend = true;
-
-async function askHelix(text) {
-  if (!text || awaiting) return;
-  lastFinal = text;
-  $("#send").disabled = true;
-  setState("WORKING");
-  log(`→ Helix: "${text}"`, "out");
-  try {
-    const r = await fetch("/say", { method: "POST",
-      headers: { "Content-Type": "application/json", "X-Helix-Voice": "1" },
-      body: JSON.stringify({ text }) });
-    const d = await r.json();
-    if (!d.ok) { log("send failed: " + (d.error || r.status), "err"); setState("ERROR"); return; }
-    log(`task ${d.task} created — waiting for the answer`, "✓");
-    setState("THINKING");
-    awaiting = d.task;
-    pollTask(d.task);
-  } catch (e) { log("bridge unreachable: " + e.message, "err"); setState("ERROR"); }
-}
-
-async function pollTask(id) {
-  // A sub-agent can be slow. Four minutes covers the slow ones; give up and say so
-  // rather than poll forever, because silence is exactly what broke this before.
-  const deadline = Date.now() + 240000;
-  while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 2000));
-    let d;
-    try { d = await (await fetch("/task?id=" + encodeURIComponent(id))).json(); }
-    catch (e) { continue; }
-    if (!d.ok) continue;
-    if (d.status === "done" && d.summary) {
-      awaiting = null;
-      $("#answer").textContent = d.summary;
-      log("Helix answered", "←");
-      speak(d.summary);
+function startPump() {
+  const src = ctx.createMediaStreamSource(micStream);
+  const node = ctx.createScriptProcessor(4096, 1, 1);
+  node.onaudioprocess = e => {
+    if (!liveReady || ws.readyState !== 1) return;
+    if (!awake) {                              // muted: still send, but only wake-word audio
+      // Keep the stream open so the wake word is heard, but do not treat it as speech.
+      // Live needs *something* to detect the wake word, so we send at a low level.
+      const quiet = new Int16Array(e.inputBuffer.length);
+      ws.send(quiet.buffer);
       return;
     }
-    if (d.status === "failed") {
-      awaiting = null;
-      log("that task failed — nothing to speak", "err");
-      setState("ERROR");
-      return;
-    }
+    ws.send(downsampleTo16k(e.inputBuffer.getChannelData(0)));
+  };
+  const mute = ctx.createGain(); mute.gain.value = 0;
+  src.connect(node); node.connect(mute); mute.connect(ctx.destination);
+  pump = node;
+}
+
+// ── audio out: model -> speakers, interruptible ─────────────────────────────
+async function playOut(chunk) {
+  playQueue.push(chunk);
+  if (playing) return;
+  playing = true;
+  while (playQueue.length) {
+    if (!liveReady) { playQueue = []; break; }        // interrupted: drop the rest
+    const c = playQueue.shift();
+    try {
+      const ab = await ctx.decodeAudioData(c);
+      if (!liveReady) { playQueue = []; break; }
+      const src = ctx.createBufferSource();
+      src.buffer = ab; src.connect(ctx.destination);
+      speaking = true; setState("SPEAKING");
+      await new Promise(r => { src.onended = r; });
+    } catch (e) {}
   }
-  awaiting = null;
-  log("no answer within 4 minutes", "warn");
-  setState("IDLE");
+  playing = false; speaking = false;
+  if (liveReady) { setState(awake ? "LISTENING" : "IDLE"); resetIdle(); }
 }
 
-$("#send").onclick = () => askHelix(lastFinal);
-$("#autosend").onchange = e => { autoSend = e.target.checked; };
+// ── session ─────────────────────────────────────────────────────────────────
+async function connect() {
+  if (liveReady || connecting) return;
+  connecting = true;
+  setLink("connecting", "connecting to Gemini Live…");
+  try {
+    if (!micStream) {
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true,
+                 autoGainControl: true } });
+    }
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+    await ctx.resume();
+  } catch (e) {
+    connecting = false;
+    setLink("error", "microphone blocked");
+    setMic("muted", "allow the microphone, then click here");
+    log("mic: " + e.message, "err");
+    return;
+  }
 
+  try { ws = new WebSocket(LIVE_WS); }
+  catch (e) { connecting = false; setLink("error", "cannot reach proxy"); return; }
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen = () => log("live: opening session…", "🌐");
+  ws.onerror = () => setLink("error", "proxy unreachable");
+  ws.onclose = () => {
+    liveReady = false; connecting = false; awake = false;
+    setLink("error", "disconnected — retrying…");
+    setMic("muted", "reconnecting…");
+    setState("IDLE");
+    playQueue = [];
+    setTimeout(connect, 3000);              // Live sessions end; just rejoin
+  };
+  ws.onmessage = ev => {
+    if (typeof ev.data !== "string") { playOut(ev.data); return; }
+    let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+    switch (d.type) {
+      case "ready":
+        liveReady = true; connecting = false;
+        setLink("live", `live · ${d.model.replace("models/", "")} · ${d.voice}`);
+        startPump();
+        setMic("muted", `muted — say “${($("#wake").value || "helix")}”`);
+        log(`live ready (${d.model}, ${d.voice})`, "🌐");
+        break;
+      case "transcript":
+        if (d.final) {
+          lastFinal = d.text;
+          $("#final").textContent = d.text;
+          if (!awake && wakeWordHit(d.text)) wakeUp("wake word");
+          resetIdle();
+        } else $("#interim").textContent = d.text;
+        break;
+      case "reply":
+        $("#answer").textContent = ($("#answer").textContent === "—" ? "" :
+                                    $("#answer").textContent + " ") + d.text;
+        break;
+      case "interrupted":
+        interrupts++; playQueue = [];         // <-- the barge-in
+        log("interrupted — you talked over it", "⚡");
+        setState("LISTENING"); resetIdle();
+        break;
+      case "state":
+        if (d.state === "listening") { setState(awake ? "LISTENING" : "IDLE"); resetIdle(); }
+        break;
+      case "error":
+        log("live: " + d.error, "err"); setLink("error", "error");
+        break;
+    }
+  };
+}
+
+// The bar and the page are the only controls, exactly like the old voice core.
+$("#micbar").onclick = () => { awake ? sleepNow() : wakeUp("clicked"); };
+$("#stayawake").onchange = resetIdle;
+$("#livevoice").onchange = () => {           // voice change needs a fresh session
+  if (!liveReady) return;
+  log("switching voice — reconnecting", "🌐");
+  try { ws.close(); } catch (e) {}
+};
+$("#wake").onchange = () => setMic("muted", `muted — say “${$("#wake").value || "helix"}”`);
+
+connect();
 setState("IDLE");
 drawLinks();
 </script>

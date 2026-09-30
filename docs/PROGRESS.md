@@ -1247,3 +1247,86 @@ and `hashchange` handles back/forward.
   point of the blank-then-load design.
 - Deep link `/#/world-monitor` loads straight into World Monitor with the right tab
   selected and 46 stories live.
+
+---
+
+## 2026-09-30 — File / Document Agent (requirements §7.2 — the last missing one)
+
+A gap found by reading the spec rather than the log: requirements §7 lists **eight**
+agents and there were only **seven**. No File / Document agent existed — which is
+precisely what requirements §28's flagship demo needs, since research can gather
+material but nothing could produce the actual PDF and PowerPoint.
+
+### Reuse check first (the ladder)
+Before writing anything, checked what already exists:
+
+- Hermes **already bundles** `productivity/pdf`, `productivity/docx`,
+  `productivity/powerpoint` and `productivity/xlsx` skills, synced into every profile.
+- The skill scripts are `#!/usr/bin/env python3`, so they resolve whatever `python3`
+  is on PATH — and **none of their libraries were installed**: `reportlab`, `pypdf`,
+  `pdfplumber`, `pymupdf`, `python-docx`, `python-pptx`, `openpyxl` all missing.
+- `libreoffice`/`soffice` was present, and PEP 668 blocks system-python installs.
+
+**Decision (human's):** install the libraries, into an isolated Helix venv rather than
+`--break-system-packages` on a PEP 668-managed system Python.
+
+`~/.local/share/helix-docs-venv` — 172 MB, all seven import cleanly:
+`reportlab 5.0.1`, `pypdf 6.19.0`, `pdfplumber 0.11.10`, `pymupdf 1.28.2`,
+`python-docx 1.2.0`, `python-pptx 1.0.2`, `openpyxl 3.1.5`.
+
+Proved the toolchain *before* building an agent on top of it: generated a probe
+PDF/PPTX/DOCX and read all three back (1-page PDF, text extracts; 1-slide PPTX, title
+reads; DOCX parses). Non-trivial that a missing wheel on Python 3.14 did not block this.
+
+### The agent
+`document` — clone, key verified, model + 2-entry fallback inherited. Tools:
+`clarify, file, memory, skills, terminal, todo, web`. **`terminal` had to be enabled
+explicitly** — the clone inherited the CEO's 8-tool trim, which has no terminal, so the
+agent would have been unable to run the document scripts at all.
+
+`SOUL.md` names the exact interpreter
+(`~/.local/share/helix-docs-venv/bin/python`, *not* system `python3`) so the skills
+work, requires writing a script to a file rather than giant inline one-liners, and
+leads with the project's central rule: **never claim a file exists until you have
+reopened it and read the content back.**
+
+### Verified — real files, opened by me
+Asked for a PDF and a PPTX. It reported `helix-test.pdf` 1990 bytes / 1 page and
+`helix-test.pptx` 29210 bytes / 2 slides. Checked every claim myself:
+
+```
+PDF : 1990 bytes, 1 page, text extracts -> "Helix Document Agent Test" + full body
+PPTX: 29210 bytes, 2 slides, titles 'Helix' and 'Sub-Agents',
+      slide 2 body = "research\npc\ndev\nvision\ncomm"
+```
+
+Every size, page count, slide count and title matched exactly. The deck is a genuine
+OOXML file, not a renamed blob.
+
+**A false alarm of my own, worth recording:** the output directory I had pre-created
+(`~/helix/out/`) came back *empty* and I was one step from reporting the agent had
+fabricated its files — the exact old-Jarvis bug this project exists to prevent. It was
+**my** mistake: the task body said `/home/abubakargcx/out/` and I created
+`~/helix/out/`. The agent used the path it was given and reported it accurately. The
+files were there all along. Checked the path the agent *reported* before accusing it.
+
+### Agent Town
+`PROFILES` extended to 9. Caught the new desk live with the in-page poller armed
+before dispatch:
+
+```
+06:59:23  ... career=idle  document=working
+06:59:46  ... career=idle  document=idle
+```
+
+A second task (`liveness.pdf`, 1837 bytes) also produced and verified correctly.
+
+**Nine agents now exist: helix, research, pc, dev, vision, comm, sysmon, career,
+document.** The §7 list is complete.
+
+### Still not done
+The §28 flagship demo itself — research a topic through to a finished PDF + PPTX saved
+to the Desktop — has not been run end to end. The pieces are now all present and
+independently verified; that run is the next step, and the human chose the narrower
+scope for this pass.
+

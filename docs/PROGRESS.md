@@ -1006,3 +1006,41 @@ earlier runs in the same page. Changed nothing on the strength of a guess.
 Also fixed: the panel logged a made-up duration (`blob.size / 32000` — a WAV formula
 applied to MP3, reporting 1.7s for 9.2s of audio). It now reads the real duration off
 the media element, which matters because that number appears in the barge-in line.
+
+### 2026-09-30 — World Monitor re-verified, not rebuilt
+
+The World Monitor task was re-issued after the over-engineering pass. **It was already
+built and verified earlier in this session**, so nothing was rebuilt. Re-checked against
+the live system rather than asserted from memory, since the bridge has since been
+refactored and restarted:
+
+| check | result |
+|---|---|
+| `helix-globe` service | active, enabled |
+| globe root / `/api/setup/status` | 200 / 200 |
+| LAN `192.168.100.97:4173` | refused (000) — still loopback-only |
+| framing headers on the document | absent — the `build/vite.js` patch is still in place |
+| `/world-monitor/` | 200, **zero console errors** |
+| iframe | 440x483, `src=http://127.0.0.1:4173/?cb=1` |
+
+**Headlines — real, not placeholders:** 46 stories, all four feeds healthy
+(`BBC World 12, NPR 10, Ars Technica 12, Hacker News 12`, zero errors). Top item linked
+to a real `bbc.co.uk/news/articles/...` URL dated `Tue, 29 Sep 2026 23:15:29 GMT`.
+
+**Globe — real, not placeholders:** screenshot shows a live Cesium render with satellite
+imagery of Austin, TX. Data layers confirmed server-side, not assumed from the picture:
+`/api/celestrak/starlink` returning a TLE at epoch **26272 = day 272 of 2026 (yesterday)**
+— i.e. live, not a cached fixture — plus `/api/celestrak/active` and `/api/launches`
+(27 results).
+
+`currentslab/news-api-skills` remains **not installed**, for the reason already recorded
+above: it is an agent-facing Hermes skill, not a server component, so it could not serve a
+UI panel even if installed, and it requires a registered `CURRENTS_API_KEY` that this
+machine does not have. Keyless RSS does the job with zero installs.
+
+**Still not done in World Monitor** (unchanged, for the record):
+- **2D map** — requirements §16.3 asks for globe + map + headlines. The globe app has its
+  own map mode; it is not surfaced as a second view in the panel.
+- 8 optional provider keys unconfigured ("POWER UP · 8 KEYS WAITING"). Globe, satellites
+  and launches all work keyless; these are keyed/paid and only worth adding if a specific
+  layer is actually wanted.

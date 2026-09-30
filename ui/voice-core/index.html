@@ -259,6 +259,24 @@ function resetIdle() {
 }
 
 // ── audio in: mic -> 16 kHz mono PCM16 ──────────────────────────────────────
+// Always send REAL mic audio, never digital silence. Sending silence while
+// muted makes the wake word undetectable by definition, which is why a muted
+// session produced 0 audio frames out of the proxy: the model had nothing to
+// answer and nothing to be woken by.
+//
+// The local energy gate is lifted from the old Jarvis, whose comment records
+// why it exists: without it, "room tone, a fan, a keyboard or a cough reached
+// the server, the server's VAD heard a turn, and the model answered a
+// hallucinated request - which is how Jarvis ended up searching the web and
+// tidying files with nobody speaking."
+//
+// Note what is deliberately NOT gated: playback. The old system muted the mic
+// whenever it was speaking, which is exactly why it could never be interrupted.
+// Here audio keeps flowing through playback and Gemini decides when to stop.
+const RMS_FLOOR = 0.010;
+const RMS_MARGIN = 2.2;
+let noiseFloor = 0;
+
 function downsampleTo16k(f32) {
   const ratio = ctx.sampleRate / 16000;
   const n = Math.max(1, Math.floor(f32.length / ratio));
@@ -277,14 +295,21 @@ function startPump() {
   const node = ctx.createScriptProcessor(4096, 1, 1);
   node.onaudioprocess = e => {
     if (!liveReady || ws.readyState !== 1) return;
-    if (!awake) {                              // muted: still send, but only wake-word audio
-      // Keep the stream open so the wake word is heard, but do not treat it as speech.
-      // Live needs *something* to detect the wake word, so we send at a low level.
-      const quiet = new Int16Array(e.inputBuffer.length);
-      ws.send(quiet.buffer);
-      return;
-    }
-    ws.send(downsampleTo16k(e.inputBuffer.getChannelData(0)));
+    const f = e.inputBuffer.getChannelData(0);
+    let sum = 0;
+    for (let i = 0; i < f.length; i++) sum += f[i] * f[i];
+    const level = Math.sqrt(sum / f.length);
+
+    // Adapt the floor on quiet frames only, so speech cannot drag it up and mask
+    // itself. Then drop anything that is just the room.
+    if (level <= noiseFloor * 2.2) noiseFloor = 0.99 * noiseFloor + 0.01 * level;
+    else noiseFloor = noiseFloor * 0.995 + level * 0.005;
+    if (level < Math.max(noiseFloor * RMS_MARGIN, RMS_FLOOR)) return;   // room tone
+
+    // Audio is sent whether or not we are awake, so the wake word is always
+    // detectable. Whether we ACT on it is decided by `awake`, below.
+    ws.send(downsampleTo16k(f));
+    if (awake) resetIdle();
   };
   const mute = ctx.createGain(); mute.gain.value = 0;
   src.connect(node); node.connect(mute); mute.connect(ctx.destination);

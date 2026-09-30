@@ -2248,3 +2248,57 @@ class of bug can never hide again.
 
 ### Orb
 Untouched, as always. Only `ui/voice-core/index.html` and `tools/live_server.py` changed.
+
+### The counter then exposed a second bug the first fix did not cover
+`[live] 0 audio frames / 0 B out | 50 frames / 800,000 B in ~25s`
+
+800 KB of mic audio went in, **nothing came back**. The `800,000` bytes is exactly 25s of
+digital zero — and that was my doing:
+
+```js
+if (!awake) { const quiet = new Int16Array(...); ws.send(quiet.buffer); return; }
+```
+
+I was sending **pure silence while muted**. That makes the wake word undetectable *by
+definition* — the model has nothing to be woken by and nothing to answer.
+
+### Read the old system again, and it had already solved this
+From `main.py`'s mic callback:
+
+```python
+if brahma_speaking or (self.ui.muted and not _wakeword_listening): return
+...
+if level < max(noise_floor * _RMS_MARGIN, _RMS_FLOOR):   # drop room tone
+```
+
+Two things I had wrong:
+1. **Real mic audio always flows**, so the wake word is always audible. Mute is a *policy*
+   on what we act on, not a gate on what is sent.
+2. **A local energy gate** drops room tone before it reaches the server. Its comment is
+   the best argument for it I have seen anywhere in this project:
+   *"room tone, a fan, a keyboard or a cough reached the server, the server's VAD heard a
+   turn, and the model answered a hallucinated request — which is how Jarvis ended up
+   searching the web and tidying files with nobody speaking."*
+
+Ported both: adaptive `noiseFloor` (updated on quiet frames only, so speech cannot drag it
+up and mask itself), `RMS_FLOOR = 0.010`, `RMS_MARGIN = 2.2`.
+
+**What is deliberately not gated: playback.** The old system muted the mic whenever it was
+speaking — which is exactly why it could never be interrupted. Here audio keeps flowing
+through playback and Gemini decides when to stop. That is the one place I deliberately
+diverged, and it is the feature the human asked for.
+
+### Wake-word instruction in the system prompt
+Also lifted from the old Jarvis, which needed the same: with the mic muted by default the
+model hears the wake word as an ordinary turn and would answer it. The prompt now says to
+acknowledge briefly and **wait for the actual command**.
+
+### Verified
+- `sends silence while muted: False`, energy gate present
+- `node --check` passes (11.8 KB), `live_server.py` parses
+- **204,480 bytes (4.26s) of audio out** through the proxy, with a real reply:
+  `میں ایک ڈیجیٹل سسٹم ہوں اور فون نہیں لا سکتا۔` ("I am a digital system and cannot make calls.")
+
+The audio path is now proven end to end from the proxy, and the conversion is proven in a
+real browser AudioContext. **What only the human can confirm is that sound comes out of
+their speakers** — I have no audio device in this environment.

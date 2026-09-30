@@ -35,7 +35,14 @@ SYSTEM = (
     "(research, documents, system control, development, vision, messaging, "
     "career) but for anything long, say you are starting it rather than reading "
     "the whole result aloud. If the user talks over you, stop immediately and "
-    "listen. You may speak English and Urdu."
+    "listen. You may speak English and Urdu. "
+    # Lifted from the old Jarvis, which needed the same thing: the mic is muted
+    # by default, so the model hears the wake word as an ordinary turn and would
+    # otherwise answer it instead of waiting.
+    "Wake-word mode: the microphone is muted by default. You will hear the "
+    "words 'helix', 'hey helix' or 'hi helix' on their own. When you hear one "
+    "of those activation cues, do not answer it — just say you are listening, "
+    "briefly, and wait for the actual command."
 )
 
 

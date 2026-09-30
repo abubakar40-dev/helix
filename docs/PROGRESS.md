@@ -1038,9 +1038,58 @@ above: it is an agent-facing Hermes skill, not a server component, so it could n
 UI panel even if installed, and it requires a registered `CURRENTS_API_KEY` that this
 machine does not have. Keyless RSS does the job with zero installs.
 
-**Still not done in World Monitor** (unchanged, for the record):
-- **2D map** — requirements §16.3 asks for globe + map + headlines. The globe app has its
-  own map mode; it is not surfaced as a second view in the panel.
-- 8 optional provider keys unconfigured ("POWER UP · 8 KEYS WAITING"). Globe, satellites
-  and launches all work keyless; these are keyed/paid and only worth adding if a specific
-  layer is actually wanted.
+**Still not done in World Monitor** (for the record): 8 optional provider keys
+unconfigured ("POWER UP · 8 KEYS WAITING"). Globe, satellites and launches all work
+keyless; these are keyed/paid and only worth adding if a specific layer is actually
+wanted.
+
+### 2026-09-30 — 2D map view added to World Monitor
+
+Requirements §16.3 asks for globe + map + headlines; only the globe was surfaced before.
+
+**Important correction to the task's premise:** God's Eye View has **no discrete 2D
+mode**. Searched the source for every plausible form of it — `SCENE3D`,
+`COLUMBUS_VIEW`, `MORPHOGRAPHIC`, `scene.mode`, orthographic/mercator projection,
+`map2d` — and none exist. The `map=` URL param is the *basemap layer*
+(`osm` / `esri-imagery` / `photoreal`), not a renderer.
+
+What the app does have is its **own map view**: the same Cesium scene in a straight-down,
+north-up camera. `src/ui/cameraOrientationControls.js` exposes exactly that as a
+"tilt" control whose two labels are `Tilt map to oblique view` /
+`Return map to straight-down view`, plus a north-up reset.
+
+So the toggle is a **camera + basemap mode of the existing app**, not a second engine —
+which is also the right answer under the minimal-code rule, since anything else would
+have meant adding a new map library and a new dependency to render a view the installed
+app already has.
+
+Implementation: two buttons in the header swap the iframe `src` to the same URL with
+`pitch=-90&heading=0&welcome=0&map=esri-imagery`. Same centre point in both views, so
+switching does not teleport. No change to the third-party repo.
+
+### Verified, same standard as the 3D view
+- Baseline: 3D active, 46 stories, **zero console errors**.
+- Clicking **2D Map** changes the iframe src, swaps button state and updates
+  `aria-selected` (both directions).
+- The iframe's **`load` event fired 10.6s** after switching — the map URL genuinely
+  loaded in the frame, not a cached page or a 404.
+- **Real data, not placeholders:** the parent tab's network capture *does* include
+  cross-origin frame subresources (I had assumed it didn't — tested, and it does).
+  It shows `services.arcgisonline.com/.../World_Imagery/MapServer/tile/23/0/0` and
+  `terrain.reearth.land/.../ellipsoid/layer.json` fetched from inside the embedded map
+  view. Globe data layers stay live in map view too (`/api/celestrak/gps-ops` →
+  `GPS BIIR-5 (PRN 22)`).
+- Confirmed against the app's own state in its own origin: with the map URL loaded
+  directly, the tilt button reads **"Tilt map to oblique view"** (i.e. currently
+  straight-down) and the north button reads **heading 0 degrees** — the app itself
+  reporting top-down and north-up.
+- 46 stories still rendering alongside, real `bbc.co.uk` URL, no errors.
+
+**Honest limit:** the screenshot tool stopped working this session ("needs a visible
+tab" — the desktop window is not available to it), so unlike the 3D view I have **no
+visual capture** of the 2D map. The evidence above is behavioural and network-level:
+load event fired, real map/terrain tiles fetched, and the app's own camera controls
+confirm the top-down north-up state. That is a weaker form of proof than a picture and
+is flagged as such rather than glossed.
+
+The 8 optional keyed provider layers remain unconfigured, per the free-only policy.

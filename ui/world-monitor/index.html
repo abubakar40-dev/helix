@@ -19,6 +19,12 @@
   .sub { color:var(--dim); font-size:11px; }
   .sub b { color:var(--accent); font-weight:600; }
   #age { margin-left:auto; font-size:11px; color:var(--dim); }
+  .seg { display:flex; border:1px solid var(--line); border-radius:999px; overflow:hidden; margin-left:22px; }
+  .seg button { background:#161b22; color:var(--dim); border:0; padding:5px 14px; cursor:pointer;
+                font:inherit; font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; }
+  .seg button + button { border-left:1px solid var(--line); }
+  .seg button.on { background:#1f6feb; color:#fff; }
+  .seg button:hover:not(.on) { color:var(--text); background:#1a212b; }
   main { flex:1; display:flex; min-height:0; }
   #globe { flex:1; border:0; background:#000; }
   aside { width:360px; flex:none; border-left:1px solid var(--line); background:var(--panel);
@@ -43,6 +49,10 @@
 <body>
   <header>
     <h1>Helix · World Monitor</h1>
+    <div class="seg" role="tablist" aria-label="View mode">
+      <button id="v3d" class="on" role="tab" aria-selected="true">3D Globe</button>
+      <button id="v2d" role="tab" aria-selected="false">2D Map</button>
+    </div>
     <span class="sub">globe: <b>God's Eye View</b> @ 127.0.0.1:4173 · headlines: <b>bridge</b> /headlines</span>
     <span id="age">loading…</span>
   </header>
@@ -50,6 +60,9 @@
     <!-- Own static page, no shared shell with Agent Town yet (spec: keep separate for now). -->
     <!-- cb= forces a re-fetch: a previously cached 4173 response still carries the old
          X-Frame-Options/CSP headers, which render this frame black. -->
+    <!-- The 2D "mode" is the SAME app in a top-down, north-up camera (pitch=-90,
+         heading=0) on a flat basemap. Gods Eye View has no separate 2D renderer -
+         no Cesium scene-mode switching - so this is its own map view, not a new engine. -->
     <iframe id="globe" src="http://127.0.0.1:4173/?cb=1" title="God's Eye View globe"
             allow="fullscreen; geolocation"></iframe>
     <aside>
@@ -83,6 +96,30 @@ function render(d) {
   document.getElementById("age").textContent =
     d.total + " stories · " + new Date(d.ts * 1000).toLocaleTimeString();
 }
+
+// ── 3D globe / 2D map toggle ────────────────────────────────────────────────
+// Gods Eye View is one app. Its "map" view is the same Cesium scene with a
+// straight-down, north-up camera on a flat basemap, driven entirely by share-hash
+// params — so the toggle just swaps the iframe src. Same centre point in both, so
+// switching views does not teleport you somewhere else.
+const GLOBE = "http://127.0.0.1:4173/";
+const HASH = "v=2&lat=30.2672&lon=-97.7431&heading=0&pitch=-90&roll=0" +
+             "&style=normal&bloom=0&sharpen=1&bi=0&bv=2&si=49&hud=tactical&hv=1" +
+             "&dm=DENSE&dd=75&da=elastic&kf=7&ko=1&cr=0";
+const VIEWS = {
+  "3d": GLOBE + "?cb=1",
+  "2d": GLOBE + "?cb=1&welcome=0#" + HASH + "&map=esri-imagery",
+};
+function setView(v) {
+  document.getElementById("globe").src = VIEWS[v];
+  for (const k of ["3d", "2d"]) {
+    const b = document.getElementById("v" + k);
+    b.classList.toggle("on", k === v);
+    b.setAttribute("aria-selected", String(k === v));
+  }
+}
+document.getElementById("v3d").onclick = () => setView("3d");
+document.getElementById("v2d").onclick = () => setView("2d");
 
 async function load() {
   try { render(await (await fetch("/headlines")).json()); }

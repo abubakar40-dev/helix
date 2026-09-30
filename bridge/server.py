@@ -60,6 +60,8 @@ PROFILES = [
     ("dev", "dev", "Development"),
     ("vision", "vision", "Vision"),
     ("comm", "comm", "Communication"),
+    ("sysmon", "sysmon", "System Monitor"),
+    ("career", "career", "Career"),
 ]
 
 # A task in one of these states means the agent is busy right now.

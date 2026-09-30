@@ -1093,3 +1093,109 @@ confirm the top-down north-up state. That is a weaker form of proof than a pictu
 is flagged as such rather than glossed.
 
 The 8 optional keyed provider layers remain unconfigured, per the free-only policy.
+
+---
+
+## 2026-09-30 — Remaining sub-agents from requirements §7
+
+Requested order: dev, vision, sysmon, career, comm. `dev`, `vision` and `comm`
+**already existed** from the earlier phase-1 pass, so rather than rebuild them I
+re-verified each against the current (refactored) system, then built the two genuinely
+missing.
+
+### dev — re-verified, not rebuilt
+Read-only sanity task over `~/helix`. Claims: **11 tracked files, 3538 tracked lines,
+latest commit "World Monitor: add 3D globe / 2D map toggle"**. All three re-checked
+myself with the same commands — exact match, including the commit subject.
+
+### vision — re-verified, and this time with a **real image**
+The earlier smoke test was a text-only question, which barely exercised the role. This
+time it was handed an actual PNG (a real page screenshot) and asked to OCR it.
+
+It read the first headline as **"Chinese AI tool told researchers how to make
+bioweapons"** and the title as **"HELIX · WORLD MONITOR"** — both exactly right, which
+I know independently from the world-monitor verification. That is genuine image
+understanding, not a lucky text answer.
+
+### sysmon — created
+Requirements §7.8. Tools trimmed to `clarify, file, memory, skills, terminal, todo, web`
+— read-only measurement, no browser, no code execution, no kanban, no delegation.
+
+`SOUL.md` is built around one rule: **observe, do not fix.** It must not kill
+processes, clear caches, install packages or edit config, even when the fix is obvious;
+it recommends, the human acts. Plus: always give the real number with the real command,
+always state the threshold being judged against, quote real errors, and correlate before
+alarming.
+
+Backed that with an `approvals.deny` list, because SOUL prose is not enforcement (the
+lesson from `pc` and `dev`). Tested both directions:
+
+```
+deny : sudo · kill · pkill · rm -rf · systemctl stop/restart · apt · pip install
+       npm install · truncate · journalctl --vacuum · writes to /var/log     5/5 blocked
+allow: free -h · df -h · top -bn1 · ps aux --sort=-%cpu · lscpu · lsblk
+       ss -tulpn · uptime                                                   8/8 allowed
+```
+
+Smoke test: reported 6.9 Gi RAM (7,383,580,672 B), 64 Gi free of 135 Gi, Intel
+i5-7300U / 4 logical CPUs, top 3 by CPU with PIDs. Re-checked every hardware claim
+against `lscpu`/`free`/`df` — **all exact**. Two behaviours worth noting: it
+**volunteered the difference between `top -bn1` instantaneous and `ps` lifetime
+averages** rather than presenting one as the other, and it ended with **"no remediation
+performed"** — obeying the observe-don't-fix rule on its first run. Confirmed the
+system was untouched afterwards (all three services still active).
+
+### career — created
+Requirements §7.6. Tools: `clarify, file, memory, skills, todo, web` — no terminal, no
+computer-use, no browser.
+
+`SOUL.md` has one hard boundary: **it drafts, it never submits.** It must not apply to a
+job, send a CV or cover letter, accept an offer, or message an employer — an application
+cannot be unsent. It also must never invent a skill, title, date or qualification, must
+be honest when a role is a poor fit rather than flattering the request, must cite posting
+URLs with dates, and must not paste the human's CV into web searches.
+
+Smoke test: asked for a LinkedIn headline, drafting only. It produced a dated markdown
+file with three options, headed **"DRAFT (not published) / Status: DRAFT ONLY. Nothing
+was sent, posted, applied to, or messaged."** Verified the artifact really exists
+rather than trusting the summary — the scratch workspace had been garbage-collected
+(correct), but the attachment survived at
+`~/.hermes/kanban/attachments/t_30323a4e/linkedin-headline-draft.md`, 1488 bytes, real
+content.
+
+### comm — profile verified, but genuinely blocked on you
+Re-ran the credential proof: **both `helix` and `comm` resolve `OPENROUTER_API_KEY`**
+through the gateway's own per-turn scope. So the "gateway API-key fix" is **not
+outstanding — it was retracted earlier in this session** after being proven wrong
+(`gateway/run.py` reads the profile `.env` per turn; the absence of the key from
+`os.environ` is the security property working, not a bug). `comm` also has its model
+and 2-entry fallback chain, and 6 trimmed tools.
+
+A real task through Kanban worked: it drafted the WhatsApp reply, reported **"DRAFTED
+— nothing sent, posted, or messaged; no channel tool was invoked"**, and
+`channel_directory.json` is still `{"platforms": {}}`, proving nothing left the machine.
+
+**The only thing blocking comm is a real channel, which needs you:**
+
+| channel | what it needs from you |
+|---|---|
+| WhatsApp | a QR scan from your phone (`hermes whatsapp`) |
+| Telegram | a bot token from @BotFather |
+| Discord | a bot token from the Discord developer portal |
+
+All three are free and need no billing. The moment one is configured, the real
+end-to-end test becomes possible: a real message in, a real reply out — which is the
+one gateway path never yet exercised. **Not guessing at a token or a channel id.**
+
+### Agent Town
+`bridge/server.py` `PROFILES` extended to 8. The page already renders whatever the
+bridge reports, so no UI change was needed. Verified **8 desks render**, and armed an
+in-page poller *before* dispatching so the new desk was caught live:
+
+```
+06:07:47  ... sysmon=idle  career=idle
+06:08:06  ... sysmon=idle  career=working     <- real task
+06:08:23  ... sysmon=idle  career=idle
+```
+
+Eight agents live: helix, research, pc, dev, vision, comm, sysmon, career.

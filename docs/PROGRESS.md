@@ -1724,3 +1724,70 @@ The throwaway delivery-test job and its script were removed afterwards.
    forced-breach run is what makes the watchdog real.
 
 `hermes cron incidents`: none recorded.
+
+---
+
+## 2026-09-30 — Phase 8 / §22: the mobile surface is WhatsApp, and it was nearly already done
+
+§25 Phase 8 says "Mobile app, remote gateway". §22 is the actual specification, and it
+lists seven capabilities. Assessed each against what exists rather than building an app:
+
+| §22 capability | status |
+|---|---|
+| send text commands | already works |
+| send **voice** commands | already works — wired earlier today |
+| transcribe WhatsApp voice messages | already works — wired earlier today |
+| receive notifications | already works — the two cron jobs from Phase 7 |
+| receive HELIX responses | already works |
+| monitor tasks | **verified working** — asked the CEO, it read the board and reported 32 tasks and the correct most-recent title |
+| transfer files | capability present, CEO did not know — see below |
+
+**A native mobile app is explicitly the wrong build.** §12 says *"no feature bloat — every
+feature must have a clear purpose"*, and §3.2 says reuse before writing code. WhatsApp is
+already an installed, free, push-capable, voice-capable mobile client that the human
+already uses. Writing an app to reimplement it would violate the spec's own principles.
+
+### File transfer: present, correct, and already secured
+The WhatsApp adapter has `send_document` and a `send-media` bridge call, so the capability
+existed. `gateway.media_delivery_allow_dirs` was empty, which looked like a blocker — but
+reading the validator shows the allowlist is only consulted in **strict** mode. Default
+non-strict is: allow anything not denylisted.
+
+**My first probe of this was wrong and I nearly drew the wrong conclusion.** I called
+`validate_media_delivery_path("MEDIA:/path")` and got `None` for everything, which reads
+as "sending files is completely blocked". In fact the function takes a **plain path**;
+`MEDIA:` is stripped by `_normalize_media_tag_path` in a different layer. Re-run with the
+right input:
+
+```
+DELIVERABLE  ~/Desktop/helix-backup-guide.pdf
+DELIVERABLE  ~/Desktop/helix-backup-guide.pptx
+DELIVERABLE  ~/helix/docs/PROGRESS.md
+blocked      ~/.hermes/.env
+blocked      ~/.hermes/state.db     <- whole conversation history, every secret ever pasted
+blocked      ~/.ssh/id_rsa
+blocked      /etc/passwd
+blocked      /proc/self/environ
+```
+
+The security model is already right: deliverables pass, every credential and system path
+is refused, and it fails closed. **No config change was needed, and none was made** — the
+empty allowlist is correct for this box.
+
+The only real gap was knowledge. Added a *Sending files back to the human* section to the
+CEO SOUL: use a `MEDIA:` tag rather than printing a path (a path is useless to someone on
+a phone), the same tag returns screenshots, and — importantly — **if delivery is refused,
+say so plainly and do not work around it**, because that filter is the thing stopping
+secrets leaving the machine.
+
+### The one item I did not build
+**"Books of Eras"** (§23) — a structured historical knowledge database. Deliberately
+deferred and raised with the human instead of started, because:
+- §23 is explicitly scoped "later phase", and so is Phase 8;
+- it says *"respect copyright/licensing when acquiring source material"* — a real
+  acquisition decision, not a coding one, and not mine to make;
+- it is the only Phase 8 item with no existing capability to reuse, so it would be a
+  genuine from-scratch build rather than wiring.
+
+Also unchanged: **barge-in "talk over"** still cannot be tested — this box has no
+microphone, which is hardware, not software.

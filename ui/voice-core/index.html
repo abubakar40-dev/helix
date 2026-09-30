@@ -118,6 +118,10 @@
           <option value="en">Reply in English</option>
           <option value="ur">جواب اردو میں دیں</option>
         </select>
+        <select id="voice">
+          <option value="live">Voice: Gemini Live (cloud, best quality)</option>
+          <option value="local">Voice: local only (private, offline)</option>
+        </select>
         <select id="ttsengine">
           <option value="auto">Voice: auto (online first)</option>
           <option value="edge">Force online</option>
@@ -405,10 +409,171 @@ $("#talkover").onchange = (e) => {
 addEventListener("beforeunload", () => {
   watchForTalk(false);
   if (monStream) monStream.getTracks().forEach(t => t.stop());
+  liveStop();
 });
-$("#speak").onclick = () => speak(
-  "Helix voice core online. Press the button at any time and I will stop talking " +
-  "mid-sentence and listen to your new command instead of finishing this one.");
+$("#speak").onclick = async () => {
+  if ($("#voice").value === "live") {
+    liveMode = true;
+    const ok = await liveStart();
+    if (ok) {
+      // Ask out loud so the first turn is a real one rather than silence.
+      liveWs.send("Introduce yourself in one short sentence, then ask how you can help.");
+    } else {
+      liveMode = false;
+      log("falling back to local voice", "warn");
+    }
+    return;
+  }
+  speak(
+    "Helix voice core online. Press the button at any time and I will stop talking " +
+    "mid-sentence and listen to your new command instead of finishing this one.");
+};
+
+// Switching to local must actually release the Live session, the mic and the
+// socket. Leaving them open would mean the local mode is not private at all.
+$("#voice").onchange = async e => {
+  if (e.target.value !== "live") {
+    liveMode = false; liveStop();
+    $("#answer").textContent = "—";
+    log("live off — everything stays on this machine", "🔒");
+  } else {
+    log("live on — audio streams to Google (see §5.3)", "🌐");
+  }
+};
+
+// ── Gemini Live: continuous, interruptible conversation ──────────────────────
+// Primary voice mode. The mic streams straight through while the model speaks, so
+// talking over it interrupts — the server sends {"type":"interrupted"} and the
+// audio simply stops. The old Jarvis could not do this: it muted the mic for a
+// fixed window after TTS and discarded transcripts that resembled the reply, which
+// made talk-over structurally impossible.
+//
+// The key never reaches this page. tools/live_server.py holds it and relays audio
+// over ws://127.0.0.1:8788. Choose "local only" in the voice dropdown to keep
+// everything on this machine and fall back to whisper.cpp + local TTS.
+
+const LIVE_WS = "ws://" + location.hostname + ":8788";
+let liveWs = null, liveStream = null, liveCtx = null, liveGain = null;
+let liveReady = false, liveMode = false, liveInterrupts = 0;
+
+function liveSetState(s) { setState(s); }
+
+async function liveStart() {
+  if (liveReady) return true;
+  setState("CONNECTING");
+  liveStream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true,
+             autoGainControl: true }});
+  liveCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+
+  return new Promise(resolve => {
+    let ws;
+    try { ws = new WebSocket(LIVE_WS); }
+    catch (e) { log("live: " + e.message, "err"); setState("ERROR"); return resolve(false); }
+    liveWs = ws;
+    ws.binaryType = "arraybuffer";
+
+    ws.onopen = () => log("live: connecting to Gemini…", "🌐");
+    ws.onerror = () => { log("live: proxy unreachable at " + LIVE_WS, "err"); };
+    ws.onclose = () => {
+      liveReady = false; liveSetState("IDLE");
+      log("live: disconnected", "warn");
+      if (liveMode) log("switched back to local — press Listen to retry", "warn");
+    };
+    ws.onmessage = async ev => {
+      if (typeof ev.data !== "string") {         // binary = model audio
+        try { await livePlay(ev.data); } catch (e) {}
+        return;
+      }
+      let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.type === "ready") {
+        liveReady = true;
+        log(`live: connected (${d.model}, voice ${d.voice})`, "🌐");
+        liveSetState("LISTENING");
+        livePump();
+        resolve(true);
+      } else if (d.type === "transcript") {
+        if (d.final) { $("#final").textContent = d.text; log(`heard: "${d.text}"`, "🎙"); }
+        else $("#interim").textContent = d.text;
+      } else if (d.type === "reply") {
+        $("#answer").textContent = ($("#answer").textContent === "—" ? "" :
+                                    $("#answer").textContent + " ") + d.text;
+      } else if (d.type === "interrupted") {
+        liveInterrupts++;
+        log("interrupted — you talked over it", "⚡");
+        liveSetState("LISTENING");
+      } else if (d.type === "state" && d.state === "listening") {
+        liveSetState("LISTENING");
+      } else if (d.type === "error") {
+        log("live: " + d.error, "err"); setState("ERROR");
+      }
+    };
+  });
+}
+
+/** Queue of decoded model audio; played in order, cleared the moment we interrupt. */
+let liveQueue = [], livePlaying = false;
+
+async function livePlay(chunk) {
+  liveQueue.push(chunk);
+  if (livePlaying) return;
+  livePlaying = true;
+  setState("SPEAKING");
+  while (liveQueue.length) {
+    if (!liveReady) { liveQueue = []; break; }   // interrupted: drop the rest
+    const c = liveQueue.shift();
+    try {
+      const ab = await liveCtx.decodeAudioData(c);
+      const src = liveCtx.createBufferSource();
+      src.buffer = ab; src.connect(liveCtx.destination); src.start();
+      await new Promise(r => { src.onended = r; });
+    } catch (e) {}
+  }
+  livePlaying = false;
+  if (liveReady) setState("LISTENING");
+}
+
+/** Keeps feeding mic audio for the whole session — that is what enables barge-in. */
+function livePump() {
+  const src = liveCtx.createMediaStreamSource(liveStream);
+  const proc = liveCtx.createScriptProcessor(4096, 1, 1);
+  const workletSrc = src;
+  proc.onaudioprocess = e => {
+    if (!liveReady || liveWs.readyState !== 1) return;
+    liveWs.send(downsampleTo16k(e.inputBuffer.getChannelData(0)));
+  };
+  // ScriptProcessor is deprecated but is the only node available without a
+  // separate worklet file; it is fine for a 16 kHz voice stream.
+  src.connect(proc);
+  proc.connect(liveCtx.destination);
+  // Mute the monitor path so the model does not hear itself through the speakers.
+  const mute = liveCtx.createGain(); mute.gain.value = 0;
+  proc.disconnect(); proc.connect(mute); mute.connect(liveCtx.destination);
+  liveGain = proc;
+}
+
+/** Linear resample to 16 kHz and pack to Int16. Good enough for speech. */
+function downsampleTo16k(f32) {
+  const ratio = liveCtx.sampleRate / 16000;
+  const n = Math.floor(f32.length / ratio);
+  const out = new Int16Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let k = 0; k < ratio; k++) s += f32[Math.floor(i * ratio) + k] || 0;
+    const v = Math.max(-1, Math.min(1, s / ratio));
+    out[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+  }
+  return out.buffer;
+}
+
+function liveStop() {
+  liveReady = false;
+  if (liveGain) { try { liveGain.disconnect(); } catch (e) {} liveGain = null; }
+  if (liveWs) { try { liveWs.close(); } catch (e) {} liveWs = null; }
+  if (liveStream) { liveStream.getTracks().forEach(t => t.stop()); liveStream = null; }
+  if (liveCtx) { try { liveCtx.close(); } catch (e) {} liveCtx = null; }
+  liveQueue = []; livePlaying = false;
+}
 
 // ── conversation loop: ask → wait → answer, out loud ────────────────────────
 // Before this, /say created a task and nothing ever read the result, so a voice

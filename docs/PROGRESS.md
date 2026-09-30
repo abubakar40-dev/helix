@@ -2025,3 +2025,109 @@ of leaving the optional keyed provider layers unconfigured — that is the human
 mine. But the more important point: **Gemini would not have fixed either defect reported
 here.** Both were orchestration bugs in Helix — an extra button press and a missing return
 leg. A different STT/TTS vendor produces a nicer voice and exactly the same silence.
+
+---
+
+## 2026-10-01 — Gemini Live as primary voice, with the old key, local kept as fallback
+
+The human pointed at `/home/abubakargcx/jarvis-old-archive/JARVIS` and said Gemini Live
+had been good there, the only problem being no interrupt. Asked me to use it as primary
+with **both modes behind a toggle**, use the old key, and **not change the orb** (stated
+twice — honoured, see below).
+
+### Read the old code before agreeing or disagreeing
+Verified the claim rather than taking it on trust:
+
+| claim | found |
+|---|---|
+| old Jarvis used Gemini Live | ✅ `types.LiveConnectConfig`, `response_modalities=["AUDIO"]` (`main.py:2905`) |
+| no interrupt | ✅ **zero** interrupt code; only `send_client_content` (mic audio *in*) |
+| voice | `Charon` — a deep male prebuilt voice, same as requested later |
+
+**And the reason it could not interrupt** — the most useful thing in the archive:
+
+- `_ECHO_GUARD_MS` / `_speaking_until` — mic **muted for a fixed window** after TTS
+- `_looks_like_echo(text)` — transcripts resembling the reply **discarded** (`_echo_drops`)
+
+So the old system was *defeating the platform's own barge-in*. Talk-over was not an
+unfinished feature, it was a casualty of a blunt echo strategy. The new local VAD is the
+same class of workaround, only better — which is why the local path is now the fallback and
+not the answer.
+
+### I was wrong about §5.3, and this entry records the correction properly
+I had twice said Gemini "violates §5.3". It does not. §5.3 says to **minimise** data sent
+to Gemini and calls it *"a standing constraint on any future use"*, and §9 lists Gemini
+Live as a candidate. The human was right and my reading was sloppy.
+
+### Google's docs settle the design question
+> "**Barge-in:** User can interrupt the model at any time for responsive interaction."
+
+Native, server-side. Better than any local trick, so it is primary.
+
+### Reuse first, then a venv
+`google.genai` already existed in Hermes's **uv cache**, and `websockets` too. But
+assembling a `PYTHONPATH` from opaque cache hashes would break on the next
+`hermes update`, so I used a dedicated `~/.local/share/helix-live-venv` (70 MB):
+`google-genai 2.25.0`, `websockets 16.1.1`.
+
+### Proved it before building any UI
+`tools/check-live.py`, against the **real recorded speech**:
+
+```
+[1] connected to gemini-3.8-live (voice Charon)
+[2] heard from the recording: 'अपना 2 मिनट फोन जल्दी लेकर आओ।'   <- Urdu, transcribed
+[3] audio returned: 116,162 bytes  (4.8s @ 24kHz, 1 turn)
+[4] barge-in while speaking -> server signalled interrupted=True
+```
+
+`LiveServerContent.interrupted` is **Google's own signal that it cut itself off**. That is
+far stronger evidence than inferring interruptibility from "did another turn happen".
+
+Two API surprises, both caught by reading rather than guessing:
+- `send_realtime_input(audio=bytes)` is rejected in 2.25 — it wants
+  `types.Blob(data=..., mime_type="audio/pcm;rate=16000")`
+- `gemini-2.0-flash-live-001` (the old Jarvis's model) is **gone**; listed what exists and
+  chose `gemini-3.8-live`
+
+### The key never reaches the browser
+Live is a bidirectional WebSocket, so something must hold the key. `tools/live_server.py`
+does: it reads `GEMINI_API_KEY` from `~/.hermes/.env` (copied from the old
+`config/api_keys.json`, perms 600) and relays audio between page and Gemini. Managed by
+`helix-live.service`, bound to **`127.0.0.1:8788` only** (confirmed via `ss`).
+
+Wire protocol: binary = audio both ways, text = JSON control
+(`ready|state|transcript|reply|interrupted|error`).
+
+**A real bug I hit and fixed:** `session.receive()` is a **one-shot generator that ends
+after one model turn**. My first version treated its end as "conversation over", so the
+session died immediately after the first reply. Fixed by re-entering `receive()` per turn
+and tearing down only when the *browser* disconnects.
+
+Verified through the proxy with a WebSocket client:
+```
+ready (gemini-3.8-live, Charon)
+transcript 'अपना 2 मिनट फोन जल्दी लेकर आओ।'
+reply 'جی، میں آپ کی بات' / 'سمجھ گیا ہوں…' / 'میں کس طرح مدد' / 'کر سکتا ہوں؟'
+interrupted
+transcript 'اوئے'          <- it heard the interruption
+audio back: 214,562 bytes
+```
+
+### The toggle, as asked
+A **voice** dropdown: `Gemini Live (cloud, best quality)` — the default — or
+`local only (private, offline)`. Switching to local calls `liveStop()`, which closes the
+socket, stops the mic tracks and closes the AudioContext; leaving them open would mean
+"local" was not actually private. The status line also says which way it went
+(`🌐` cloud / `🔒` local), and `beforeunload` releases everything.
+
+### The orb was not touched
+Stated twice, so verified explicitly: `git status ui/voice-core/` shows only
+`index.html` modified. `orbScene.js` untouched, `createOrbScene` import intact, and the
+page still reports **`orb ready`** with its canvas present. `node --check` passes on the
+20 KB module script.
+
+### Honest status
+The proxy, the Live session, transcription, audio return and the `interrupted` signal are
+all proven against real audio. **The in-page WebRTC path is unproven by me** — the harness
+browser denies microphone permission — so the first thing to do is press **Speak** in
+Brave and talk over it.

@@ -319,6 +319,13 @@ EDGE_TTS = os.path.expanduser("~/.local/share/helix-tts-venv/bin/edge-tts")
 PIPER = os.path.join(TTS_DIR, "piper", "piper")
 PIPER_LIB = os.path.join(TTS_DIR, "piper")
 PIPER_MODEL = os.path.join(TTS_DIR, "voices", "en_GB-alan-medium.onnx")
+# Gemini Live TTS tier. google-genai lives in its own venv, so this shells out
+# exactly like every other tier; the key is read there, never in this process.
+# A LIST, not a joined string: _render hands argv straight to subprocess, so a
+# space-joined path would be exec'd as one filename with a space in it. That is
+# why the Live tier failed silently and the chain fell through to edge-tts.
+LIVE_TTS = ["/home/abubakargcx/.local/share/helix-live-venv/bin/python",
+            "/home/abubakargcx/helix/tools/live_tts.py"]
 ESPEAK = "espeak-ng"
 
 # Male voices throughout, per the human's preference for a deep voice. The previous
@@ -347,7 +354,14 @@ def _render(label, build, ext, mime, stdin=None, env=None, timeout=60):
         p = subprocess.run(build(out), input=stdin, capture_output=True,
                            text=bool(stdin), timeout=timeout, env=env)
         if p.returncode != 0 or not os.path.isfile(out) or os.path.getsize(out) < 512:
-            return None, mime, f"{label}: " + (p.stderr.decode(errors="replace").strip()[-120:] or "no audio")
+            # `text=bool(stdin)` makes subprocess return str, not bytes. Calling
+            # .decode() on it raised AttributeError and killed the whole request
+            # instead of falling through to the next tier - i.e. a tier failing
+            # produced a dead connection, not a fallback. Latent until the Live
+            # tier became the first one to pass stdin.
+            err = p.stderr if isinstance(p.stderr, str) else \
+                (p.stderr or b"").decode(errors="replace")
+            return None, mime, f"{label}: " + ((err or "").strip()[-120:] or "no audio")
         with open(out, "rb") as f:
             return f.read(), mime, None
     except subprocess.TimeoutExpired:
@@ -361,6 +375,15 @@ def _render(label, build, ext, mime, stdin=None, env=None, timeout=60):
 
 def _voice(engine, lang):
     return TTS_VOICES[engine].get(lang) or TTS_VOICES[engine]["en"]
+
+
+def _tts_live(text, lang):
+    """Tier 0: Gemini Live, one text turn -> one WAV. Stateless, unlike the
+    panel's persistent session. Shells out because google-genai lives in its own
+    venv; every other tier is a local binary and this is not."""
+    return _render("live-tts",
+                   lambda out: [*LIVE_TTS, "--lang", lang, "--out", out],
+                   ".wav", "audio/wav", stdin=text, timeout=120)
 
 
 def _tts_edge(text, lang):
@@ -395,36 +418,53 @@ def _tts_espeak(text, lang):
 def tts(text, lang="en", engine="auto"):
     """Online-first TTS with a local fallback.
 
-    Returns (audio_bytes, mime, engine_used, error). `engine` is auto|edge|piper.
-    Tried in order until one produces real audio:
-        1. edge-tts  - online, free, no key, natural quality
-        2. piper     - offline neural TTS, British voice
-        3. espeak-ng - offline, robotic, but cannot fail on a normal install
+    Returns (audio_bytes, mime, engine_used, error, skipped). `skipped` names
+    the tiers that failed before the one that worked. Tried in order until one
+    produces **real audio** — a tier that returns nothing is a failure, never a
+    silent success, which is the bug class this project keeps getting bitten by.
+
+      1. live-tts  — Gemini Live, best quality; sends text to Google (see §5.3)
+      2. edge-tts  — online, free, no key, natural quality
+      3. piper     — offline neural TTS, British male voice
+      4. espeak-ng — offline, robotic, but cannot fail on a normal install
+
+    A chain, not a switch: Live being unreachable or rate-limited must still
+    leave three working tiers behind it.
     """
     text = (text or "").strip()
     if not text:
-        return None, None, None, "empty text"
+        return None, None, None, "empty text", ""
     if len(text) > 2000:
-        return None, None, None, "text too long"
+        return None, None, None, "text too long", ""
     if not re.fullmatch(r"[a-z]{2,3}(-[a-z]{2,4})?", lang or ""):
-        return None, None, None, "bad lang"
+        return None, None, None, "bad lang", ""
     lang = lang.split("-")[0]
 
     order = {
-        "auto":  [("edge-tts", _tts_edge), ("piper", _tts_piper), ("espeak", _tts_espeak)],
-        "edge":  [("edge-tts", _tts_edge)],
+        "auto":  [("live-tts", _tts_live), ("edge-tts", _tts_edge),
+                  ("piper", _tts_piper), ("espeak", _tts_espeak)],
+        "live":  [("live-tts", _tts_live), ("edge-tts", _tts_edge),
+                  ("piper", _tts_piper), ("espeak", _tts_espeak)],
+        "edge":  [("edge-tts", _tts_edge), ("piper", _tts_piper),
+                  ("espeak", _tts_espeak)],
         "piper": [("piper", _tts_piper), ("espeak", _tts_espeak)],
     }.get(engine or "auto")
     if not order:
-        return None, None, None, "bad engine"
+        return None, None, None, "bad engine", ""
 
-    tried = []
+    tried, skipped = [], []
     for name, fn in order:
         audio, mime, err = fn(text, lang)
         if audio:
-            return audio, mime, name, None
-        tried.append(f"{name}: {err}")
-    return None, None, None, " | ".join(tried)[:300]
+            # Surface what was skipped. A silent fallback is indistinguishable
+            # from success, which is the bug class that keeps recurring here.
+            # This is the 5th slot, NOT `err` - `err` must stay falsy on success
+            # or every good response turns into a 400.
+            return audio, mime, name, None, "; ".join(skipped)[:300]
+        reason = (err or "no audio").replace("\n", " ")[:90]
+        tried.append(f"{name}: {reason}")
+        skipped.append(f"{name}={reason}")
+    return None, None, None, "; ".join(tried)[:300], ""
 
 
 def _selftest():
@@ -526,14 +566,17 @@ class Handler(BaseHTTPRequestHandler):
                     payload = json.loads(body or b"{}")
                 except ValueError:
                     return self._send_json({"ok": False, "error": "bad json"}, 400)
-                audio, mime, used, err = tts(payload.get("text"),
-                                              payload.get("lang") or "en",
-                                              payload.get("engine") or "auto")
+                audio, mime, used, err, skipped = tts(payload.get("text"),
+                                                      payload.get("lang") or "en",
+                                                      payload.get("engine") or "auto")
                 if err:
                     return self._send_json({"ok": False, "error": err}, 400)
                 self.send_response(200)
                 self.send_header("Content-Type", mime)
                 self.send_header("X-Helix-TTS-Engine", used)
+                # A fallback that happens silently looks exactly like success.
+                if skipped:
+                    self.send_header("X-Helix-TTS-Skipped", skipped)
                 self.send_header("X-Helix-TTS-Lang", payload.get("lang") or "en")
                 self.send_header("Content-Length", str(len(audio)))
                 self.end_headers()

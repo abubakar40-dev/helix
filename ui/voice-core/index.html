@@ -92,6 +92,8 @@
   #audioctx[data-s=running]{color:#3fb950}
   #audioctx[data-s=suspended]{color:#f85149}
   #audioctx[data-s=none]{color:#6e7681}
+
+  #playstat{font-family:ui-monospace,monospace;font-size:11px;padding:1px 6px;border-radius:4px;background:#161b22;color:#58a6ff}
 </style>
 </head>
 <body>
@@ -138,6 +140,9 @@
         </label>
         <label class="vio">audio out
           <span id="audioctx" data-s="none">none</span>
+        </label>
+        <label class="vio">from Gemini
+          <span id="playstat" data-s="0">0f/0B</span>
         </label>
       </div>
     </div>
@@ -219,6 +224,7 @@ const LIVE_WS = "ws://" + location.hostname + ":8788";
 let ws = null, micStream = null, ctx = null, pump = null;
 let liveReady = false, awake = false, connecting = false;
 let playQueue = [], playing = false, interrupts = 0;
+let gotFrames = 0, gotBytes = 0, built = 0;
 let modelName = "", voiceName = "";
 let idleTimer = null;
 
@@ -245,6 +251,7 @@ function ensureAudioRunning() {
 // this panel has had; it must never look healthy while it is deaf.
 function reportAudioState() {
   const s = ctx ? ctx.state : "none";
+  $("#playstat").textContent = gotFrames + "f/" + gotBytes + "B";
   $("#audioctx").textContent = s;
   $("#audioctx").dataset.s = s;
   if (liveReady && s !== "running") {
@@ -340,16 +347,20 @@ function startPump() {
     for (let i = 0; i < f.length; i++) sum += f[i] * f[i];
     const level = Math.sqrt(sum / f.length);
 
-    // Adapt the floor on quiet frames only, so speech cannot drag it up and mask
-    // itself. Then drop anything that is just the room.
+    // Adapt the floor on quiet frames only, so speech cannot drag it up.
     if (level <= noiseFloor * 2.2) noiseFloor = 0.99 * noiseFloor + 0.01 * level;
     else noiseFloor = noiseFloor * 0.995 + level * 0.005;
-    if (level < Math.max(noiseFloor * RMS_MARGIN, RMS_FLOOR)) return;   // room tone
+    const gate = Math.max(noiseFloor * RMS_MARGIN, RMS_FLOOR);
 
-    // Audio is sent whether or not we are awake, so the wake word is always
-    // detectable. Whether we ACT on it is decided by `awake`, below.
+    // ALWAYS send the frame. Dropping quiet ones was the bug: the page sent
+    // 185 KB where a raw client sent 800 KB, and the holes in the timeline meant
+    // Gemini's VAD never saw a continuous stream, so it returned no audio at all —
+    // measured, not guessed. Gating TRANSMISSION is what broke voice output.
+    // The energy gate still does its real job: deciding whether this counts as
+    // speech worth waking for, which is where room tone used to cause the
+    // hallucinated requests the old Jarvis was infamous for.
     ws.send(downsampleTo16k(f));
-    if (awake) resetIdle();
+    if (awake || level > gate) resetIdle();
   };
   const mute = ctx.createGain(); mute.gain.value = 0;
   src.connect(node); node.connect(mute); mute.connect(ctx.destination);
@@ -375,6 +386,7 @@ function pcm16ToBuffer(chunk) {
 }
 
 async function playOut(chunk) {
+  gotFrames++; gotBytes += (chunk && (chunk.byteLength || chunk.length)) || 0;
   playQueue.push(chunk);
   if (playing) return;
   playing = true;
@@ -383,7 +395,7 @@ async function playOut(chunk) {
     const c = playQueue.shift();
     try {
       ensureAudioRunning();                            // never play into a suspended ctx
-      const ab = pcm16ToBuffer(c);
+      const ab = pcm16ToBuffer(c); built++;
       const src = ctx.createBufferSource();
       src.buffer = ab; src.connect(ctx.destination);
       speaking = true; setState("SPEAKING");
@@ -485,6 +497,7 @@ $("#livevoice").onchange = () => {           // voice change needs a fresh sessi
 };
 $("#wake").onchange = () => setMic("muted", `muted — say “${$("#wake").value || "helix"}”`);
 
+setInterval(reportAudioState, 500);   // keep the readout honest, never stale
 connect();
 setState("IDLE");
 drawLinks();

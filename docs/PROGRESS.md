@@ -2399,3 +2399,126 @@ voice problem should reach for `check-voice-echo.py` first rather than theorise.
 **Worth flagging:** two of my three CDP scripts failed on my own quoting before working
 (`Runtime.evaluate` needs a JSON-string return to survive `returnByValue`). Recorded
 because the failures looked like product bugs and were not.
+
+---
+
+## 2026-10-04 — Audit: the TTS chain, and retracting two of my own "proofs"
+
+The human asked for an audit of the claim that Voice Core replies in audio, on the
+grounds that the same class of bug had already produced one invented duration and one
+mocked HTTP timing. **They were right to insist, and the audit found real bugs — but the
+first two were in my verification, not the product.**
+
+### Retraction 1 — my "full loop verified" claim was invalid
+`tools/check-voice-echo.py` played **my own** `voice.wav` through the speakers and then
+recorded the microphone. Whisper transcribed the result as `"1/2"` / `"नहीं नहीं नहीं"` —
+which matches **my own recording**, not necessarily Chrome's output. I never isolated the
+speaker path. That test proved nothing about Chrome emitting sound and I should not have
+called it definitive.
+
+### Retraction 2 — my audit "found" a bug I had manufactured
+`tools/audit-voice-path.py` reported:
+```
+H1 binary frames RECEIVED: 10 (0 bytes)
+err audio playback failed: Failed to execute 'createBuffer' … frames provided
+```
+That was **my probe**. I overrode the `WebSocket` `binaryType` setter without forwarding it,
+so the real socket stayed on `"blob"`, `new Int16Array(blob)` produced zero samples, and
+`createBuffer` threw. The "root cause" was my own instrumentation. The lesson is now baked
+into the scripts: probe **only** what you cannot corrupt, and never wrap a setter you do
+not forward.
+
+### A third lie: the proxy counters were missing
+While adding message-shape logging I lost the `stats["out_frames"] += 1` increments. The
+counter then reported `out 0f/0B` **while a raw client was demonstrably receiving audio** —
+so I nearly went hunting for a bug in `live_server.py` that was not there. Restored, and
+the comment now says so, because a counter that reports zero while bytes are moving is
+worse than no counter.
+
+### Real bug 1 — the energy gate was dropping most of the audio (THE cause)
+The page gated *transmission* on an adaptive energy floor:
+
+```js
+if (level < Math.max(noiseFloor * RMS_MARGIN, RMS_FLOOR)) return;   // room tone
+```
+
+Measured consequence: the page sent **185,640 B** where an identical raw client sent
+**800,000 B**. The holes in the timeline meant Gemini's VAD never saw a continuous stream.
+
+Isolated by trial, same proxy, same audio, only the send pattern differing:
+
+| pattern | audio out | replies |
+|---|---|---|
+| burst (0.02 s gap) + silence | 119,044 B | 3 |
+| streamed like the page (0.05 s gap) | 116,642 B | 4 |
+
+So the proxy was never the problem. **Fix:** always send the frame. The adaptive gate still
+does its real job — deciding what counts as speech worth *waking* for, which is where room
+tone used to cause the hallucinated requests the old Jarvis was infamous for. After the fix
+the page's inbound rose from 185 KB to 2.3 MB per session and the proxy began forwarding
+audio for it (`out 12f/222,720B`).
+
+### Real bug 2 — `_render` crashed on any failing tier (pre-existing, latent)
+```python
+p.stderr.decode(...)   # AttributeError: 'str' object has no attribute 'decode'
+```
+`_render` sets `text=bool(stdin)`, so `stderr` is already a `str`. Any tier that failed
+**while being passed stdin** raised and killed the request instead of falling through.
+Latent until the Live tier became the first to pass stdin — after which the first
+"fallback" test returned HTTP 000 with no response. Now handles both `str` and `bytes`.
+
+### Gemini Live is now tier 0 in the bridge chain, not a replacement
+`tools/live_tts.py` — stateless text→WAV, separate from the panel's persistent session.
+Chain is now **live-tts → edge-tts → piper → espeak**, all three originals intact.
+
+Three API mistakes, all caught by reading rather than guessing:
+- `send_client_content(turns=text)` — wants `Content`/list, **not** `LiveClientContent`
+- `turns` is a list, not a single `Content`
+- `send_realtime_input(audio=bytes)` — wants `types.Blob(data, mime_type)`
+
+The same `LiveClientContent` mistake was latent in `live_server.py`'s text path, wrapped in
+a bare `except` — it would have killed text input silently. Fixed in both.
+
+Verified with real bytes:
+```
+X-Helix-TTS-Engine: live-tts
+Content-Type: audio/wav
+RIFF WAVE audio, Microsoft PCM, 16 bit, mono 24000 Hz      270,284 bytes
+whisper: "Yes, that's correct. The Gemini Live Tier is now utilized first in the chain…"
+```
+
+### A silent fallback is now impossible (audit point 2)
+`tts()` returns a 5th value naming the tiers that failed, surfaced as a header:
+
+```
+X-Helix-TTS-Engine: edge-tts
+X-Helix-TTS-Skipped: live-tts=… can't open file '/nonexistent/live_tts.py'
+```
+
+Tested by deliberately breaking the Live path: chain degraded to edge-tts, returned
+26,928 B of real MPEG, **and said which tier answered**. My first attempt at this put the
+skipped list in the *error* slot, which would have turned every successful response into a
+400 — caught before it shipped.
+
+### Live observability in the panel itself
+`audio out: running|suspended` plus **`from Gemini: Nf/NB`** (frames/bytes actually
+received). The latter ticks every 500 ms because a counter that only updates occasionally
+will lie to you — mine showed a stale `0f/0B` and I nearly believed it.
+
+### What I could NOT establish
+Whether sound reaches the speakers **in the human's browser**. Every layer below that is
+measured: the model returns audio, the proxy forwards it, the PCM→AudioBuffer conversion
+produces non-silent buffers, and the panel reports no playback error in clean runs. The
+headless-mic-plus-`aplay` loopback is too unreliable to stand in for a person speaking, and
+its runs are flaky in both directions. `from Gemini:` reading `0f/0B` in their browser would
+mean the fault is before playback; non-zero with silence would mean it is the output
+device. That reading is now on screen for exactly this purpose.
+
+### §5.3 — flagged, not decided
+Routing primary TTS through Gemini sends **response text to Google**. §5.3 requires
+minimising data sent to Gemini and calls it "a standing constraint on any future use"; §9
+lists Gemini Live as a candidate. The human has already said they want quality over that
+concern, and this entry records the trade rather than quietly resolving it: Live is now the
+**first** tier tried, so with `engine=auto` ordinary Helix replies go to Google by default.
+Dropping it back to a manual tier is a one-line change in `TTS_ORDER` if that default is
+ever unwanted.

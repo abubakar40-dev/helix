@@ -102,7 +102,11 @@ async def handle(ws):
                             return
                     elif isinstance(msg, str) and msg:
                         try:
-                            await session.send_client_content(turns=msg)
+                            await session.send_client_content(
+                                    turns=[types.Content(
+                                        role="user",
+                                        parts=[types.Part(text=msg)])],
+                                    turn_complete=True)
                         except Exception:
                             return
 
@@ -118,6 +122,14 @@ async def handle(ws):
                         async for msg in session.receive():
                             sc = msg.server_content
                             if msg.data:
+                                # Count BEFORE sending. These counters were
+                                # briefly missing while shape-logging was added,
+                                # and they reported 0 while a raw client was
+                                # demonstrably receiving audio - i.e. the
+                                # instrumentation lied and nearly sent me
+                                # hunting a bug that was not in this file.
+                                stats["out_frames"] += 1
+                                stats["out_bytes"] += len(msg.data)
                                 await ws.send(msg.data)
                             if sc is None:
                                 continue

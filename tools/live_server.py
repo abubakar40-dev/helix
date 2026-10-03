@@ -149,9 +149,22 @@ async def handle(ws):
             # must not be allowed to end the conversation, or the session dies right
             # after the first reply.
             reader = asyncio.create_task(to_browser())
+
+            async def report():
+                """Progress while the session is OPEN. The end-of-session counter
+                alone was useless: a live conversation never prints it, so a
+                silent audio path looked identical to a working one."""
+                while True:
+                    await asyncio.sleep(5)
+                    print(f"[live] out {stats['out_frames']}f/{stats['out_bytes']:,}B "
+                          f"({stats['out_bytes']/48000:.1f}s) | in "
+                          f"{stats['in_frames']}f/{stats['in_bytes']:,}B", flush=True)
+
+            tick = asyncio.create_task(report())
             try:
                 await to_gemini()          # returns when the browser disconnects
             finally:
+                tick.cancel()
                 reader.cancel()
                 secs = max(1, round(stats["in_bytes"] / 32000))
                 print(f"[live] {stats['out_frames']} audio frames / {stats['out_bytes']:,} B "

@@ -2302,3 +2302,43 @@ acknowledge briefly and **wait for the actual command**.
 The audio path is now proven end to end from the proxy, and the conversion is proven in a
 real browser AudioContext. **What only the human can confirm is that sound comes out of
 their speakers** — I have no audio device in this environment.
+
+---
+
+## 2026-10-04 — Third pass at the silent voice: the AudioContext was probably suspended
+
+Human: *"it's not responding through voice, but the text response is visible."*
+
+### The end-of-session counter was useless for a live conversation
+No `[live]` lines in 20 minutes, yet text was clearly arriving. `ss` found the reason —
+an **established** connection on `127.0.0.1:8788` from `pid=508979` (Brave). The counter
+only printed when a session *closed*, so a live conversation never printed it, and a
+silent audio path looked exactly like a working one. Added a **5-second progress line**
+while a session is open (`out Nf/NNB | in Nf/NNB`), which is what actually makes this
+diagnosable.
+
+### Likely cause: autoplay policy, because I connect with no user gesture
+The page auto-connects Live on load. Chrome keeps an `AudioContext` **suspended** until a
+real user gesture, so:
+
+- mic **input** works — permission was granted explicitly
+- **text** arrives — WebSocket and fetch need no audio permission
+- **output** is dead — the context never resumed, and nothing complained
+
+That accounts for every symptom exactly, so it is the prime suspect. I have no way to
+confirm it from here — this environment has no audio device — so rather than assert it I
+made it both fixed and **observable**:
+
+- `ensureAudioRunning()` on `pointerdown` / `keydown` / `touchstart`, and again before
+  every single `playOut()`
+- a live **`audio out: running | suspended | none`** readout beside the voice picker, so
+  the next report needs no archaeology: if it says `suspended`, that is the whole bug
+
+Worth being clear-eyed that the harness browser reports `running` on create, so its
+verdict is worth nothing here — its autoplay policy is not the user's.
+
+### Still unproven
+Whether sound actually reaches the speakers. Every layer beneath it is proven: the proxy
+returns real speech PCM (whisper transcribed the model's own voice and it matched the
+reply frames), and the PCM→AudioBuffer conversion produced peak 0.61 / RMS 0.431 in a real
+browser AudioContext. The last link — speakers — needs a human with ears.

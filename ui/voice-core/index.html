@@ -87,6 +87,11 @@
   .bar[data-s=live]{color:#3fb950;border-color:#1f6f33;background:#0f1c14;
        box-shadow:0 0 0 1px #1f6f33 inset,0 0 18px -6px #3fb950}
   .bar:hover{border-color:#3d444d}
+
+  #audioctx{font-family:ui-monospace,monospace;font-size:11px;padding:1px 6px;border-radius:4px;background:#161b22}
+  #audioctx[data-s=running]{color:#3fb950}
+  #audioctx[data-s=suspended]{color:#f85149}
+  #audioctx[data-s=none]{color:#6e7681}
 </style>
 </head>
 <body>
@@ -124,12 +129,15 @@
           <input type="checkbox" id="stayawake">
         </label>
         <label class="vio">voice
-          <select id="livevoice" style="width:112px">
+          <select id="livevoice" style="width:104px">
             <option value="Charon">Charon</option>
             <option value="Orus">Orus</option>
             <option value="Puck">Puck</option>
             <option value="Fenrir">Fenrir</option>
           </select>
+        </label>
+        <label class="vio">audio out
+          <span id="audioctx" data-s="none">none</span>
         </label>
       </div>
     </div>
@@ -214,6 +222,27 @@ let playQueue = [], playing = false, interrupts = 0;
 let idleTimer = null;
 
 const IDLE_SLEEP_MS = 20000;   // back to the wake word after this long quiet
+
+// Chrome's autoplay policy keeps an AudioContext suspended until a real user
+// gesture. We connect on page load (no gesture), so the context could stay
+// suspended: mic INPUT works because permission was granted, text arrives over
+// the WebSocket, and yet not one sample reaches the speakers. Resume on any
+// interaction and before every play, and surface the state so this can never be
+// a silent mystery again.
+function ensureAudioRunning() {
+  if (!ctx) return "none";
+  if (ctx.state === "running") return "running";
+  ctx.resume().catch(() => {});
+  return ctx.state;
+}
+["pointerdown", "keydown", "touchstart"].forEach(ev =>
+  addEventListener(ev, () => ensureAudioRunning(), { passive: true }));
+
+function reportAudioState() {
+  const s = ctx ? ctx.state : "none";
+  $("#audioctx").textContent = s;
+  $("#audioctx").dataset.s = s;
+}
 
 function setLink(s, text) {
   const el = $("#linkstate");
@@ -342,6 +371,7 @@ async function playOut(chunk) {
     if (!liveReady) { playQueue = []; break; }        // interrupted: drop the rest
     const c = playQueue.shift();
     try {
+      ensureAudioRunning();                            // never play into a suspended ctx
       const ab = pcm16ToBuffer(c);
       const src = ctx.createBufferSource();
       src.buffer = ab; src.connect(ctx.destination);
@@ -353,6 +383,7 @@ async function playOut(chunk) {
         log("audio playback failed: " + e.message, "err");
       }
     }
+    reportAudioState();
   }
   playing = false; speaking = false;
   if (liveReady) { setState(awake ? "LISTENING" : "IDLE"); resetIdle(); }
@@ -401,6 +432,7 @@ async function connect() {
         liveReady = true; connecting = false;
         setLink("live", `live · ${d.model.replace("models/", "")} · ${d.voice}`);
         startPump();
+        reportAudioState();
         setMic("muted", `muted — say “${($("#wake").value || "helix")}”`);
         log(`live ready (${d.model}, ${d.voice})`, "🌐");
         break;

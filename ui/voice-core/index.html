@@ -219,6 +219,7 @@ const LIVE_WS = "ws://" + location.hostname + ":8788";
 let ws = null, micStream = null, ctx = null, pump = null;
 let liveReady = false, awake = false, connecting = false;
 let playQueue = [], playing = false, interrupts = 0;
+let modelName = "", voiceName = "";
 let idleTimer = null;
 
 const IDLE_SLEEP_MS = 20000;   // back to the wake word after this long quiet
@@ -236,12 +237,22 @@ function ensureAudioRunning() {
   return ctx.state;
 }
 ["pointerdown", "keydown", "touchstart"].forEach(ev =>
-  addEventListener(ev, () => ensureAudioRunning(), { passive: true }));
+  addEventListener(ev, () => { ensureAudioRunning();
+    setTimeout(reportAudioState, 120); }, { passive: true }));
 
+// If the context will not run, SAY SO on the bar instead of accepting your words
+// and answering in silence. A silent voice is the single most confusing failure
+// this panel has had; it must never look healthy while it is deaf.
 function reportAudioState() {
   const s = ctx ? ctx.state : "none";
   $("#audioctx").textContent = s;
   $("#audioctx").dataset.s = s;
+  if (liveReady && s !== "running") {
+    setLink("error", `audio blocked (${s}) — click anywhere, then reload if it stays`);
+    setMic("blocked", "click anywhere to allow voice");
+  } else if (liveReady && s === "running") {
+    setLink("live", `live · ${modelName} · ${voiceName}`);
+  }
 }
 
 function setLink(s, text) {
@@ -430,7 +441,8 @@ async function connect() {
     switch (d.type) {
       case "ready":
         liveReady = true; connecting = false;
-        setLink("live", `live · ${d.model.replace("models/", "")} · ${d.voice}`);
+        modelName = d.model.replace("models/", ""); voiceName = d.voice;
+        setLink("live", `live · ${modelName} · ${voiceName}`);
         startPump();
         reportAudioState();
         setMic("muted", `muted — say “${($("#wake").value || "helix")}”`);

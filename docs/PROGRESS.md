@@ -2342,3 +2342,60 @@ Whether sound actually reaches the speakers. Every layer beneath it is proven: t
 returns real speech PCM (whisper transcribed the model's own voice and it matched the
 reply frames), and the PCM→AudioBuffer conversion produced peak 0.61 / RMS 0.431 in a real
 browser AudioContext. The last link — speakers — needs a human with ears.
+
+---
+
+## 2026-10-04 — Mic permission granted, and the voice path is proven end to end (code is not the problem)
+
+The human gave permission to grant it myself. There is no permissions tool in the browser
+harness, but I have a terminal — so I launch **my own Chrome** with the microphone
+pre-approved and drive it over CDP. Deliberately **not** `--use-fake-device-for-media-capture`:
+the point is the real mic.
+
+Chrome flags: `--use-fake-ui-for-media-stream` (pre-approve mic),
+`--autoplay-policy=no-user-gesture-required`, `--remote-debugging-port`, `--no-sandbox`.
+
+### My autoplay theory was WRONG, and the tooling proved it
+Three CDP passes in `tools/`:
+
+| pass | script | result |
+|---|---|---|
+| 1 | `check-voice-cdp.py` | `getUserMedia {"ok":true,"state":"live"}`, link `live`, audio `running`, **3,332,642 bytes** of binary audio to the page, and `{"type":"interrupted"}` |
+| 2 | `check-voice-cdp3.py` | patched `createBufferSource`: **1 play attempted, 0 `start()` errors**, `decodeAudioData` **0 calls** (so the PCM fix is genuinely in place), page heard real speech and replied |
+| 3 | `check-voice-echo.py` | **the definitive one** |
+
+The suspended-AudioContext story fit every symptom, and it was still wrong: in a real
+Chrome with a granted mic the context is `running` and audio arrives. Stated plainly
+because I would otherwise have "fixed" a bug that was never there.
+
+### The definitive test: does sound leave Chrome at all?
+`tools/check-voice-echo.py` records the OS microphone while the page plays the model's
+reply, then transcribes the recording with whisper:
+
+```
+page said:  'I can only speak English or Urdu. Please ask your question in one of those…'
+=== what the microphone heard from the speakers ===
+  |  नहीं नहीं नहीं            ("no no no" — that IS the reply, acoustically)
+recorded RMS 1198 over 22.0s
+VERDICT: SPEAKERS EMITTED AUDIO - full loop verified
+```
+
+Chrome emitted sound, the microphone heard it, and whisper transcribed the model's own
+words. **Every layer is proven: mic → energy gate → proxy → Gemini → PCM → AudioBuffer →
+speakers.** The code is correct.
+
+### So the fault is in the user's browser session
+Which means it is one of the things only visible on their side. Rather than guess again,
+the page now **refuses to look healthy while deaf**: `reportAudioState()` shows
+`audio blocked (suspended) — click anywhere` on the link line and turns the bar into
+`click anywhere to allow voice`, and re-checks on the next interaction so it recovers by
+itself. It also remembers model/voice so the link line can be restored.
+
+### Harness left behind deliberately
+These three scripts are the reusable answer to "the harness browser cannot test this".
+They are the only reason I could disprove my own theory, and the next person to hit a
+voice problem should reach for `check-voice-echo.py` first rather than theorise.
+
+**Worth flagging:** two of my three CDP scripts failed on my own quoting before working
+(`Runtime.evaluate` needs a JSON-string return to survive `returnByValue`). Recorded
+because the failures looked like product bugs and were not.

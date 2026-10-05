@@ -2522,3 +2522,71 @@ concern, and this entry records the trade rather than quietly resolving it: Live
 **first** tier tried, so with `engine=auto` ordinary Helix replies go to Google by default.
 Dropping it back to a manual tier is a one-line change in `TTS_ORDER` if that default is
 ever unwanted.
+
+---
+
+## 2026-10-06 — The actual cause of "no voice": `src.start()` was missing
+
+The human reported the live counter from their own browser:
+
+```
+23f/208324B buil1
+```
+
+23 frames / 208,324 bytes had arrived from Gemini, and exactly **one** AudioBuffer had
+been built. 208 KB of perfectly good audio sitting in the queue, unplayed. That single
+number located the bug; everything I had been theorising about (autoplay, echo
+cancellation, WebSocket delivery) was downstream of it.
+
+### Root cause
+`grep -c "\.start()" ui/voice-core/index.html` → **0**. The whole file contained no
+`start()` call:
+
+```js
+const src = ctx.createBufferSource();
+src.buffer = ab; src.connect(ctx.destination);
+speaking = true; setState("SPEAKING");
+await new Promise(r => { src.onended = r; });   // never resolves
+```
+
+An `AudioBufferSourceNode` that is never started never plays, so `onended` never fires,
+so that `await` blocks **forever**. The while-loop therefore processed exactly one buffer
+and every subsequent frame just accumulated in `playQueue` — which is precisely what
+`buil1` alongside `23f` means. One 0.19 s buffer, then silence: inaudible.
+
+`git log -S "src.start()"` puts the loss in **`1f58bb7` "Voice Core rebuilt on the old
+Jarvis model"**. The pre-rewrite version played through an `<audio>` element and called
+`audioEl.play()`; when I moved playback to Web Audio I dropped the equivalent call and
+never noticed, because the panel still *looked* alive — it connected, it transcribed, it
+rendered the reply as text. Only the audio was dead, and only the counters made that
+visible.
+
+### Fix
+```js
+src.start();          // the line that was missing
+await new Promise(r => {
+  let settled = false;
+  const fin = () => { if (!settled) { settled = true; r(); } };
+  src.onended = fin;
+  setTimeout(fin, (ab.duration || 0.2) * 1000 + 300);   // queue can never wedge
+});
+```
+
+The timeout matters as much as the `start()`: `onended` is the normal exit, but a single
+buffer that never reports completion must not be able to silence every buffer after it.
+One stalled buffer was this whole bug; a timeout means it can only ever cost one buffer.
+
+### On the investigation I did before this
+I chased autoplay policy, suspended AudioContext, blob-vs-arraybuffer, and echo
+cancellation — and produced three separate "verified" claims that were wrong or
+unreproducible. The counter the human was asked to read at the very beginning
+(`from Gemini: Nf/NB`) would have shown `buil1` in seconds and ended all of it. The
+lesson is already in the log from an earlier round — **a silent failure must be made
+loud**, and I built the counter and then failed to read it myself. Two earlier retractions
+in this file came from instrumentation that lied; this one came from ignoring the one
+instrument that could not lie.
+
+Also fixed in this round: the readout row overflowed its 340 px panel with
+`flex-wrap: nowrap`, so `from Gemini` rendered **201 px off-screen**. It had been visible
+in the DOM and unreadable the whole time, which is why it had not been reported. Now
+`.row.wrap{flex-wrap:wrap}` and measured `offscreenBy: 0`.

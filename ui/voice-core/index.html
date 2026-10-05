@@ -401,8 +401,18 @@ async function playOut(chunk) {
       const ab = pcm16ToBuffer(c); built++;
       const src = ctx.createBufferSource();
       src.buffer = ab; src.connect(ctx.destination);
+      src.start();          // <-- WAS MISSING. Without it the source never plays,
+                            // onended never fires, and the await below blocks
+                            // forever: one buffer built, the queue never drains.
       speaking = true; setState("SPEAKING");
-      await new Promise(r => { src.onended = r; });
+      // Guarded wait: onended is the normal exit, but if it never arrives the
+      // queue must still drain, or one bad buffer silences every later one.
+      await new Promise(r => {
+        let settled = false;
+        const fin = () => { if (!settled) { settled = true; r(); } };
+        src.onended = fin;
+        setTimeout(fin, (ab.duration || 0.2) * 1000 + 300);
+      });
     } catch (e) {
       if (!playWarned) {          // never let a playback failure hide again
         playWarned = true;

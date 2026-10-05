@@ -2590,3 +2590,62 @@ Also fixed in this round: the readout row overflowed its 340 px panel with
 `flex-wrap: nowrap`, so `from Gemini` rendered **201 px off-screen**. It had been visible
 in the DOM and unreadable the whole time, which is why it had not been reported. Now
 `.row.wrap{flex-wrap:wrap}` and measured `offscreenBy: 0`.
+
+---
+
+## 2026-10-06 — Voice Core confirmed working; and why my echo measurement was wrong
+
+Human confirmed: **"it works perfectly."** After `src.start()` was restored the counter
+went `23f/208324B buil1` → `209f/2782582B buil201`, i.e. frames and buffers 1:1 with
+only a handful in flight, and the proxy independently showed sessions of
+`119f/1349294B (28.1s)`. Playback complete.
+
+### The mishearing was NOT the speaker echo
+Symptom before it was fixed: it replied, but not to what was asked. I measured the
+OS-level speaker→mic leak and it is real — played a known phrase, recorded the mic:
+
+```
+trial 1: RMS 4836, peak 100%  | mic heard: "Hello, Enix"   (it transcribed the leak)
+trial 2: RMS 2510, peak  68%
+trial 3: RMS 2126, peak  36%
+```
+
+Then measured whether Chrome's AEC removes it:
+
+```
+aec-on   granted: echoCancellation=None   mic RMS 0.0604
+aec-off  granted: echoCancellation=None   mic RMS 0.0612     -> 1% difference
+```
+
+So in **headless** Chrome the constraint is not applied at all and AEC is inert. I
+concluded the leak was irreducible without headphones and said so.
+
+**That conclusion was wrong for the human's case, and the reason is worth recording:**
+`--headless=new` has no functional AEC path. A real Chrome honours
+`echoCancellation` and removes the reply from the mic, which is why it works for them
+with speakers on the same laptop. My measurement was valid *for headless* and I should
+have said up front that it does not transfer to a real browser, instead of presenting a
+headless artefact as a property of their setup.
+
+This is the third time in this stretch that a measurement generalised beyond what it
+covered. The pattern worth keeping: **state the conditions a measurement was taken under,
+and say plainly when they differ from the user's environment.**
+
+I did not add a half-duplex mic gate. It would have fixed recognition by muting the mic
+during playback — i.e. by deleting barge-in, the feature that was the whole point.
+
+### Tooling trimmed
+Removed 7 superseded or broken probes, including three that PROGRESS.md already records
+as having produced false or manufactured results:
+
+- `check-voice-echo.py` — played my own audio and recorded it back; the "proof" was my
+  own file, not the system's
+- `audit-voice-path.py` — overrode `binaryType` without forwarding, manufacturing the
+  `createBuffer` failure it then reported as the root cause
+- `check-voice-cdp2.py` — never worked (quoting)
+- plus four superseded by `diagnose-voice.py`
+
+Kept: `live_server.py`, `live_tts.py` (production), `diagnose-voice.py` (one-pass
+diagnostic), `check-aec.py`, `check-live.py`, `check-talkover.py`,
+`check-globe-patch.sh`. Leaving instruments that lie is how two of the three false leads
+above happened; fewer, honest probes is the fix.

@@ -2725,3 +2725,93 @@ technology, literature, art, economics, politics, war, religion, history.
 ### Wired into `research`
 SOUL section added: use the store before the web for historical questions, cite the QID,
 and re-run without `--no-expand` when it prints `NOT_IN_STORE` so the store grows with use.
+
+---
+
+## 2026-10-06 — Spec §5 deferred items: Obsidian vault + link downloads
+
+The human said "and then to other things", which is §5's deferred list. Measured what
+was actually on the box before building anything:
+
+| §5 item | reality |
+|---|---|
+| Easy Diffusion | **not installed.** `~/easy-diffusion` is 269 MB containing only `tmp/` — harness scratch space, not an app |
+| Obsidian | **installed and in use** — `~/.obsidian-vault`, 188 notes |
+| yt-dlp | **not installed** — installed it, 2026.08.19; ffmpeg already present |
+| honcho / screenpipe / kesha-voice-kit / news-api / youtube-skills | not installed; see "skipped" below |
+
+### Neither item needed code
+- **Obsidian.** The vault is plain markdown files. `grep -rl` searches it; writing is a
+  file write. No API, no plugin, no sync, no index. Reached by rung 4 of the ladder
+  (native platform feature) before any rung 7.
+- **yt-dlp.** Agents already have a terminal, so `yt-dlp` is callable directly. The spec
+  sketched a *desktop UI paste field*; the human's actual client is WhatsApp on a phone,
+  so "get this <link>" typed in chat is both less code and the better interface. Skipped
+  the UI field deliberately.
+
+So both are SOUL paragraphs: the Obsidian section in the CEO SOUL, the download section
+in `comm` (links arrive by message, and `comm` already owns media/WhatsApp).
+
+### The vault's convention was measured, not guessed
+188 notes; **177 under `memory/`**, 11 verbatim conversation transcripts. **178 of 188**
+open with YAML frontmatter using `category / key / value / source / created / updated /
+tags`. `source: "voice"`, `tags: ["jarvis-memory", …]`. The SOUL documents that shape
+and tells the agent to update an existing `key` rather than add a second file.
+
+Integrity is better than assumed: **176 distinct keys across 177 notes, only one
+duplicate** (`language`, same value both times, so no conflict). So the
+"one fact per key" rule is preventative, not a repair — no cleanup was needed or done.
+
+### Provenance caveat, encoded in the SOUL
+These notes were captured from **speech by the previous assistant**, before Helix. They
+are the human's own words but their accuracy is not guaranteed, and they record personal
+identity. So the agent must **cite, never assert** — "your notes say X (`path`, captured
+<date> from voice)", not "your sister's name is X". Confirmed necessary rather than
+theoretical: the same person is spelled **"Abbyha"** in `haider_sister_name` (2026-09-26)
+and **"Abiha"** in `cousin_abiha_name` (today). Also stated explicitly that
+`conversations/` transcripts are never to be replayed as audio — they are text
+extractions, and the human's standing rule is that their voice is not a test fixture.
+
+### Reuse judgement
+Old `JARVIS/obsidian_integration.py` (679 lines) already implements this write path.
+Not imported: it lives in an archive of a dead project and most of it (SQLite
+migration, batch saves, conversation logging) is not what Helix needs. The genuinely
+reusable part was the *format*, and that was taken from the real files rather than
+guessed. Importing from `~/jarvis-old-archive/` would be coupling, not reuse.
+
+### Verified, not assumed
+```
+$ yt-dlp --get-title --get-duration <upload.wikimedia.org/…/Big_Buck_Bunny_4K.webm>
+  Big_Buck_Bunny_4K
+$ yt-dlp --get-title <youtube.com/watch?v=aqz-KE-bpKQ>
+  Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film
+```
+Both resolve — no proxy block, despite Wikimedia's earlier 000s. Vault search:
+`grep -rl sister ~/.obsidian-vault/memory/` returns the relationship notes; 13 notes
+mention `name`.
+
+### Found while wiring: a 2,969-restart crash loop
+`jarvis-claude-gateway.service` is enabled and in `activating (auto-restart)`,
+`ExecMainStatus=203/EXEC`, **`NRestarts=2969`**. Its `ExecStart` is
+`~/JARVIS/scripts/start-claude-gateway.sh` but `~/JARVIS` was moved to
+`~/jarvis-old-archive/JARVIS` on Oct 4. 203/EXEC means the binary/script is not there,
+so it has been failing for ~2 days and restarting forever.
+
+This also **corrected my own first hypothesis**: I assumed that service was a live
+second writer to the vault and that Helix would collide with it. It cannot write
+anything — it never executes. The notes dated today (02:52) came from a manual run, not
+from it. Flagged rather than fixed: it is the human's old assistant and stopping it is
+their decision.
+
+### Skipped, with reasons
+- **honcho-self-hosted** — a memory layer, duplicating what `~/.hermes/eras.db` + the
+  vault now provide.
+- **screenpipe** — always-on screen/audio capture on a 4-core CPU-only box with 3.8 GB
+  free. Costs RAM continuously to duplicate notes that already exist as files.
+- **kesha-voice-kit** — local STT/TTS already verified: whisper.cpp for STT, and
+  Piper/espeak as the TTS fallback chain.
+- **youtube-skills** — redundant against installed yt-dlp.
+- **news-api-skills** — `research` already fetches, and the 08:00 briefing cron exists.
+- **Easy Diffusion** — needs a multi-GB install and CPU-only generation is minutes per
+  image on this box. Real capability gap (Helix can source photos via Openverse but
+  cannot *create* one), but a heavy install on constrained hardware: the human's call.

@@ -2831,3 +2831,51 @@ hermes-gateway.
 Easy Diffusion: human chose **skip**. So §23-era gaps stand as recorded — Helix can
 source photographs via Openverse but cannot generate an image, and the `matplotlib`
 charts alternative was also declined. Not revisited unless asked.
+
+---
+
+## 2026-10-06 — Books of Eras: position backfill, and a weakness in the ranking
+
+Wikidata's outage had cleared (HTTP 200), so the gap left open earlier was closed: the
+seed had run **before `P39` was added**, so only Bismarck had any career recorded.
+
+    226 figures checked -> 56 position records, 44 names resolved
+    store: 1,217 entities, 1,794 relations, 0.5 MB
+
+Only 56 records across 226 figures, which is the correct shape rather than a shortfall:
+Wikidata records `P39` for genuine officeholders, not for poets or scientists.
+
+### A query that was quietly lying
+`eras office President --year 1945` answered with **Richard Socher (executive vice
+president)** and a Prussian minister. Both were undated substring matches, and the year
+filter treated "no dates at all" as "held during every year". That asserts a tenure the
+store does not have.
+
+Fixed with one guard in `held()`: **undated offices are excluded, not assumed.** The
+same query now answers `no stored holder of 'President' during 1945`, while genuinely
+dated queries are unaffected:
+
+    $ eras office chancellor --year 1875
+      Otto von Bismarck   Imperial chancellor     1871-1890
+      Otto von Bismarck   Minister President of Prussia   1862-1873
+
+### Measured weakness: sitelinks is a language proxy, not a notability proxy
+Ranking the seed by sitelink count works well for well-documented European figures —
+Bismarck at 18 offices, and the seed's best entries scoring 169/172 sitelinks. It is
+**misleading for figures from linguistically broad countries**, where a Wikipedia
+article in many languages indicates cultural footprint rather than historical weight.
+Evidence: `Luis Alberto Sánchez` (12 offices) and `Richard Socher` (a technology
+executive, 4 offices) both outrank genuinely notable officeholders in the politics and
+war domains, and `office President --year 1945` has **no dated answer at all** because
+that domain is dominated by obscure figures.
+
+So `office` is reliable for figures already in the store with real dated claims
+(Bismarck verified), and unreliable as a way to *discover* who held what. Recorded rather
+than papered over. The fix is a different notability signal — English-sitelink article
+length or pageview counts instead of raw sitelink count — which is a seed change, not a
+query change, and was not done unasked.
+
+### Also: thin domains are unchanged
+mathematics 2, art 3, history 1. Those Wikipedia categories are small and were not
+re-chosen. Unchanged from the original seed and recorded again so it is not mistaken for
+newly broken.

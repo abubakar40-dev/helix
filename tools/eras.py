@@ -337,6 +337,82 @@ def ask(c, question, allow_expand):
     return True
 
 
+def positions(c, limit=0):
+    """Backfill P39 (+ P580/P582 tenure) for every seeded figure.
+
+    The seed predated P39 being in PREDICATES, so `office` only knew one career.
+    Re-running the seed would re-fetch every label and description too; this
+    fetches only what is missing.
+    """
+    have = {r[0] for r in c.execute("SELECT DISTINCT src FROM relation WHERE pred='P39'")}
+    people = [r[0] for r in c.execute(
+        "SELECT qid FROM entity WHERE kind NOT IN ('office','linked')"
+        + (" LIMIT %d" % limit if limit else ""))]
+    todo = [q for q in people if q not in have]
+    if not todo:
+        print("  every stored figure already has positions")
+        return 0
+    print(f"  {len(todo)} figures to check")
+    n = 0
+    for i in range(0, len(todo), 50):
+        for qid, ent in fetch_entities(todo[i:i + 50]).items():
+            if "missing" in ent:
+                continue
+            got = 0
+            for cl in (ent.get("claims") or {}).get("P39", []):
+                try:
+                    v = cl["mainsnak"]["datavalue"]["value"]
+                except Exception:
+                    continue
+                if not (isinstance(v, dict) and v.get("id")):
+                    continue
+                qs = qe = None
+                for qp, key in (("P580", "s"), ("P582", "e")):
+                    for ql in (cl.get("qualifiers") or {}).get(qp, []):
+                        try:
+                            y = year(ql["datavalue"]["value"]["time"])
+                        except Exception:
+                            continue
+                        if key == "s" and qs is None:
+                            qs = y
+                        if key == "e" and qe is None:
+                            qe = y
+                        break
+                c.execute("INSERT OR IGNORE INTO relation VALUES (?,?,?,?,?)",
+                          (qid, "P39", v["id"], qs, qe))
+                got += 1
+            n += got
+        c.commit()
+        print(f"    {min(i + 50, len(todo))}/{len(todo)} fetched, {n} position records")
+    return n
+
+
+def resolve_dangling(c):
+    """Give every QID a relation points at a name we can actually print."""
+    dangling = [r[0] for r in c.execute("""
+      SELECT DISTINCT src FROM relation WHERE src NOT IN (SELECT qid FROM entity)
+      UNION
+      SELECT DISTINCT dst FROM relation WHERE dst NOT IN (SELECT qid FROM entity)""")]
+    if not dangling:
+        return 0
+    n = 0
+    for i in range(0, len(dangling), 50):
+        for qid, ent in fetch_entities(dangling[i:i + 50]).items():
+            if "missing" in ent:
+                continue
+            lab = ((ent.get("labels") or {}).get("en") or {}).get("value") or qid
+            desc = ((ent.get("descriptions") or {}).get("en") or {}).get("value")
+            sl = ((ent.get("sitelinks") or {}).get("enwiki") or {}).get("title")
+            c.execute("INSERT OR REPLACE INTO entity VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                      (qid, lab, desc, "linked", None, None, None,
+                       f"https://en.wikipedia.org/wiki/{sl}" if sl else None,
+                       len(ent.get("sitelinks") or {}),
+                       f"https://www.wikidata.org/wiki/{qid}", 0))
+            n += 1
+        c.commit()
+    return n
+
+
 def office(c, office_name, year=None, n=15):
     """Who held a position, optionally during a given year.
 
@@ -354,8 +430,11 @@ def office(c, office_name, year=None, n=15):
     if year:
         y = int(year)
         def held(a, b):
+            # Undated offices are excluded, not assumed. `office President
+            # --year 1945` was answering with people whose office had no dates
+            # at all, which asserts a tenure we simply do not have.
             if a is None and b is None:
-                return True
+                return False
             if a is not None and y < a:
                 return False
             if b is not None and y > b:
@@ -419,6 +498,7 @@ def main():
     g = sub.add_parser("get"); g.add_argument("qid")
     f = sub.add_parser("find"); f.add_argument("term"); f.add_argument("-n", type=int, default=20)
     o = sub.add_parser("office"); o.add_argument("position"); o.add_argument("--year")
+    ps = sub.add_parser("positions"); ps.add_argument("--limit", type=int, default=0)
     sub.add_parser("stats")
     args = ap.parse_args()
     c = db()
@@ -435,6 +515,11 @@ def main():
         find(c, args.term, args.n)
     elif args.cmd == "office":
         office(c, args.position, args.year)
+    elif args.cmd == "positions":
+        n = positions(c, args.limit)
+        m = resolve_dangling(c)
+        print(f"  {n} position records, {m} names resolved")
+        print(f"  store: {stats_line(c)}")
 
 
 if __name__ == "__main__":

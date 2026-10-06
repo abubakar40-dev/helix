@@ -3262,3 +3262,108 @@ check-office-match:                            PASS, 15/15
 office chancellor --year 1871:                 Bismarck, Imperial chancellor 1871-1890
 office President --year 1945:                  Tiso / Polanyi / Chiang / Tito / …
 ```
+
+---
+
+## 2026-10-07 — Self-diagnosis, browser routing, and what the hardware cannot do
+
+The human asked for a large batch. Measured everything first; several premises turned
+out to be wrong, and those are recorded rather than quietly worked around.
+
+### 1. Helix can now detect its own failures (`tools/selfcheck.py`)
+
+Writes `~/helix/docs/bugs/<UTC>-<slug>.md`, dispatches it to opencode, and tells the
+human once. Checks: systemd unit state and restart counts, cron executions with a
+non-completed status, open cron incidents, every toolchain venv actually importing its
+libraries, disk/RAM/eras staleness, and kernel errors in 24h. It runs as **no agent** —
+a shell-level check — so a broken agent cannot hide its own failure.
+
+**Every finding carries the evidence it was based on**, because three of my earlier
+"verified" claims were false and the difference was always the missing measurement.
+
+Fault-injected, twice, before believing it:
+- **Crash-loop detection was wrong and the fault-injection proved it.** A unit with
+  `Restart=always` and `ExecStart=/nonexistent/binary` reached `NRestarts=26`,
+  `ExecMainStatus=203`, while `is-active` reported **`activating`** — not `failed`. My
+  first version branched on `is-active` and so reported it as merely "not active",
+  losing the diagnosis. The restart count is now checked FIRST, because it is the only
+  signal that names the loop. Verified both ways: loop → "restarted 26 times —
+  crash-looping"; genuinely stopped → "is inactive, not active".
+- Second injection needed `StartLimitIntervalSec=0` before systemd would loop at all.
+  Test unit removed afterwards and confirmed gone (`0` files, `inactive`).
+
+**Auto-dispatch is blocked, and the reason is measured, not guessed.** `opencode run`
+works, but every model fails:
+| model | measured result |
+|---|---|
+| `openrouter/*` | `Insufficient credits. This account never purchased credits.` Paid, and free-only is policy. |
+| `ollama/qwen2.5:3b` | free and installed, but too weak to drive tools: emits `write` with `Arguments provided: {}`, run times out (exit 124) |
+| `google/gemini-2.5-flash` / `-pro` / `flash-latest` | `404 … no longer available to new users` |
+| `google/gemini-3.8-flash` | `503 … high demand` |
+
+The Gemini key *lists* 45 models but `generateContent` 404s or 503s on every one tried.
+The **Live** API works, which is exactly why voice works while dispatch cannot. So
+`dispatch()` walks a chain and, if all fail, **appends to `docs/bugs/UNSENT.md`** and
+says so. A report is never silently dropped.
+
+Notification goes through the **proven** path rather than an invented one: `selfcheck`
+cannot send outbound (the bridge exposes no send API), so it spools a message that
+`helix-watchdog.sh` carries — that script already has `deliver: whatsapp:923203814829`
+and has delivered successfully 7 times.
+
+### 2. Browser routing (`tools/browser.py`) — YouTube and Instagram verified working
+
+Drives real Chrome/Brave over CDP on a **copy** of the login-bearing profile. Copies, not
+the live profile, because two Chrome instances on one profile corrupts it — measured: a
+second launch died with `ProcessSingleton … Aborting now to avoid profile corruption`.
+
+Four real bugs found and fixed while proving it worked, each of which returned `None`
+with **no error at all**:
+1. **Client frames were unmasked.** RFC 6455 §5.3 requires masking; the server silently
+   drops unmasked frames. Symptom: every command returned `{}`.
+2. **The 101 handshake was left in the buffer**, so reads started mid-response.
+3. **The id needle had a space** — CDP emits compact JSON `"id":1`, not `"id": 1`.
+4. **Brace-counting started at the wrong `{`.** Counting from the first brace *after* the
+   id lands inside the nested `result` member and returns early. Now scans from the
+   object start preceding the id.
+   Plus: CDP nests the answer twice (`result.result.value`); unwrapping one level reads
+   `{"type":"number"}` and yields None.
+
+**Verified working:**
+```
+$ browser open youtube.com      -> brave, {"t":"YouTube"},       session OK
+$ browser open instagram.com    -> brave, {"t":"Instagram"},     session OK
+```
+
+**LinkedIn is NOT working, and the cookie count lies.** Counting cookies suggests
+`chrome/Default` (7 cookies). Reading *session* cookies says otherwise:
+`chrome/Default` has **0** session cookies and is not logged in; `chrome/Profile 1` has
+3 (`li_at`/`JSESSIONID`) but its cookies were last written **2026-09-26** and that session
+is stale — LinkedIn redirects to `/login/`. `browser open` now prints
+`NOT LOGGED IN` on a `/login` redirect, so it can never be misread as "posted on LinkedIn".
+**LinkedIn needs one manual login; everything else is live now.**
+
+### 3. Hardware answers — three requests cannot be met as asked
+
+- **No SIM hardware exists.** No WWAN/QMI/MBIM modules, no `/dev/wwan*` or `/dev/ttyUSB*`,
+  and `lsusb` shows only webcam, Bluetooth, smartcard and root hubs. Calling over
+  Zong/Jazz needs a USB dongle or internal 4G module that is not plugged in. Human chose
+  **WhatsApp calling**, which already works both ways over WiFi/mobile data, costs
+  nothing and needs no hardware.
+- **Brightness is available**: `/sys/class/backlight/intel_backlight/brightness`
+  (currently 4766/7500). `brightnessctl` is absent, `xrandr` present.
+- **Driver updates need the human's sudo password.** Passwordless sudo is not configured,
+  so Helix can detect a driver problem and stage the command but not run it unattended.
+
+### 4. Other findings worth recording
+
+- **"My Drive" is a real 100GB NTFS partition** at `/run/media/abubakargcx/My Drive`,
+  mounted and writable, 604 files, 31GB free. Not a cloud mount. It contains
+  `JARVIS_linux_port/JARVIS.zip` (727MB) alongside the local `~/jarvis-old-archive` (3.9GB).
+- **Communication channels already implemented in this Hermes build**: Signal, Discord,
+  Slack, Telegram, WhatsApp Cloud. Human chose **Signal**, WhatsApp retained.
+- **GitHub is ready**: `gh` authenticated as `abubakar40-dev` with scopes
+  `gist, read:org, repo, workflow`; git identity set.
+- **Real kernel noise found**: 1× i915 `Atomic update failure` and 10× USB
+  `reset full-speed USB device` in 24h. Reported with counts and raw lines rather than
+  alarmed about — one-off occurrences are usually benign.

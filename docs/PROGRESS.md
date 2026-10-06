@@ -2649,3 +2649,79 @@ Kept: `live_server.py`, `live_tts.py` (production), `diagnose-voice.py` (one-pas
 diagnostic), `check-aec.py`, `check-live.py`, `check-talkover.py`,
 `check-globe-patch.sh`. Leaving instruments that lie is how two of the three false leads
 above happened; fewer, honest probes is the fix.
+
+---
+
+## 2026-10-06 — Books of Eras: a structured knowledge store, built on Wikidata
+
+§23 asks for "a structured historical knowledge database … not just a folder of random
+books", and the human asked to proceed. Scope agreed with them explicitly: **a curated
+seed across §23's categories that is fully offline afterwards, plus on-demand expansion**
+— because Wikidata holds 52,688 philosophers alone and "all of history" is not something
+to download.
+
+### Source and licensing
+Wikidata (**CC0**), via the ordinary MediaWiki/Wikidata APIs. Free, no key, already
+structured — which is exactly what §23 asks for and what a folder of books is not.
+
+### Did NOT use the Wikidata Query Service, deliberately
+Measured first: WDQS returns
+`429 Aggressively rate-limiting to 1 req / min … created during active wdqs outage`.
+A 12-category seed at one query per minute, against a service already struggling, is a
+bad neighbour and a slow build. Everything here uses the regular APIs instead, which
+serve the same data. Regular calls also trip 429 at short intervals, so `MIN_INTERVAL`
+is 2.0 s with a hard 20/40 s backoff and then giving up — hammering is what got me
+throttled in the first place.
+
+### How entities are chosen: notability, not alphabetical
+Category listings are alphabetical, so a naive seed fills up with obscure entries
+("Jolanta Brach-Czaina", "Reidar Maliks"). Each domain is therefore ranked by **number
+of sitelinks** — how many language versions the article has. That is a solid notability
+proxy and it works: the seed kept figures scoring 169/172/135 sitelinks, not the
+alphabetical noise.
+
+First attempt at that ranking silently did nothing — `sitelinks` is a **dict of every
+wiki**, not `{count: N}`, so `.get("count", 0)` returned 0 for every entity and the
+sort was a no-op. Caught because every domain printed `best sitelinks 0`.
+
+### The missing property that mattered
+Seed two answered "who is X, when were they born" but **not** "who held office Y in year
+Z", which is most of what people ask about history. Checking Wikidata showed Bismarck
+alone carries **18 `P39` (position held) claims** — and P39 was not in the property list.
+Added, together with the **`P580`/`P582` start/end qualifiers**, so tenure is stored, not
+just the office. `relation` gained `qual_start`/`qual_end` and its primary key changed,
+so the table was recreated rather than ALTERed.
+
+Also added a resolve-dangling pass: relations referenced **932 QIDs with no stored name**
+(father, mother, employer, country…), so the output would have been bare QIDs. All
+resolved.
+
+Result — the flagship query:
+
+```
+$ eras office chancellor --year 1871
+  Otto von Bismarck    Imperial chancellor    1871-1890
+
+  Minister President of Prussia   1862-1873 / 1873-1890
+  Bundeskanzler (Norddeutscher Bund) 1867-1871
+```
+
+`office` also had a plain logic bug: it matched the **holder's** name rather than the
+**position's**, so `office chancellor` could never match anything. Found by running it.
+
+### Store
+`~/.hermes/eras.db` — **1,173 entities, 1,738 relations, 0.5 MB**, SQLite, stdlib only,
+no new dependencies. Seeded domains: philosophy, science, mathematics, medicine,
+technology, literature, art, economics, politics, war, religion, history.
+
+### Honest limits
+- **Coverage is the seed, not all of history.** 226 curated entities; everything else
+  arrives through on-demand expansion, which needs internet the first time.
+- Thin domains reflect thin categories on Wikipedia: mathematics 2, art 3, history 1.
+  A future refresh should use better-chosen categories for these.
+- Wikidata currently has an active outage, so the seed logged 9 throttling backoffs. A
+  refresh later will be cheaper.
+
+### Wired into `research`
+SOUL section added: use the store before the web for historical questions, cite the QID,
+and re-run without `--no-expand` when it prints `NOT_IN_STORE` so the store grows with use.

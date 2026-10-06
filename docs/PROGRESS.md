@@ -3367,3 +3367,81 @@ is stale — LinkedIn redirects to `/login/`. `browser open` now prints
 - **Real kernel noise found**: 1× i915 `Atomic update failure` and 10× USB
   `reset full-speed USB device` in 24h. Reported with counts and raw lines rather than
   alarmed about — one-off occurrences are usually benign.
+
+---
+
+## 2026-10-07 — Jarvis memory imported, and a WhatsApp bug I caused
+
+### Jarvis memory: 178 structured rows imported
+
+The human asked for "all my history, all memory of jarvis, copy it and add the same to
+helix". Measured three separate stores, because they are not the same thing:
+
+| store | contents |
+|---|---|
+| `~/jarvis-old-archive/JARVIS/memory/personal_memory.sqlite3` | **178 rows**, real structure: category, key, value, source, created_at, updated_at |
+| `~/.obsidian-vault/memory/**/*.md` | 177 voice notes, already in the vault |
+| `abubakar_profile.md`, `long_term.json` | a hand-written profile, a small long-term file |
+
+`tools/import-jarvis-memory.py` converts the 178 rows into the vault's **existing**
+frontmatter convention rather than inventing a second shape. Result: **7 new, 8 changed,
+163 unchanged**, vault memory notes **177 → 185**, and `abubakar_profile.md` kept as a
+note rather than shredded into keys.
+
+Idempotent and verified: a second run wrote **0 new** and the file count was unchanged
+(185 → 185). All 185 notes have valid frontmatter (checked in Python — my first check
+reported "18 malformed" and that was **my test's** bug, unquoted filenames with spaces,
+not a data problem).
+
+Imported content is real and specific: `name=Abubakar`, "BS Software Engineering student
+at NUML", "Based in Rawalpindi; originally from Faisalabad", `mother=Mom`,
+`abiha=sister`, "Prefers dark mode in IDE", the scholarship-research calendar, the
+Redmi A3 ROM flashing work. Note `active_projects_list` still says the goal is "building
+their AI assistant, Jarvis" — stale, and exactly the kind of note the CEO SOUL already
+tells agents to cite rather than assert.
+
+Source opened read-only on a temp copy: the archive is the human's history and the
+`-wal`/`-shm` siblings mean the original can look live to sqlite.
+
+### I sent the human the same WhatsApp message twice, and selfcheck caught it
+
+Building "full WhatsApp control", I spooled a one-shot cron job with
+`deliver: whatsapp:<id>`. Text delivery **genuinely worked**
+(`status=completed delivery=delivered`). But the job then **repeats every minute** — the
+message went out at 00:22:30 and again at 00:24:28. **Cron here has no one-shot kind, so
+"one-shot" was a fiction I asserted without checking.** Both jobs, their scripts and
+their execution rows are removed.
+
+`selfcheck.py` then flagged the second job as
+`status=failed — Fire claim ownership lost before execution started`, which is how I
+found the residue. The tool catching my own bug minutes after I wrote it is the whole
+argument for building it.
+
+**Direct send is refused, with the reason, rather than faked:**
+- Calling `whatsapp_cloud.send()` or constructing a `DeliveryRouter` needs the live
+  adapter dict only the running gateway holds — either would open a **second** WhatsApp
+  session for the same account. Same mistake as opening the live Chrome profile twice,
+  which measured as `ProcessSingleton … Aborting now to avoid profile corruption`.
+- The cron spool repeats. Measured, twice.
+
+So the supported route stays the one with 9 successful deliveries and no duplicates: a
+**scheduled** script job (`helix-watchdog.sh`, `helix-daily-briefing`) whose stdout the
+gateway delivers. `tools/whatsapp.py send` now returns that explanation instead of
+sending.
+
+### Calling you
+`whatsapp.py call` hands your own WhatsApp a real call link
+(`https://wa.me/279503771283483`). **WhatsApp exposes no API that lets an assistant ring
+you silently**, so this is a genuine call you answer on your phone, not a simulated one.
+Combined with the hardware finding — no WWAN/QMI/MBIM, no `/dev/wwan*`, no `ttyUSB` —
+Zong/Jazz calling is impossible on this machine without a 4G dongle.
+
+### GitHub is ready, not built
+`gh` authenticated as `abubakar40-dev`, scopes `gist, read:org, repo, workflow`; git
+identity `abubakar40-dev <abubakargcx@gmail.com>`. Push/pull/manage needs no new code —
+the human's standing rule is that `pc` and `dev` gate anything destructive, and a force
+push or history rewrite still asks.
+
+### Driver updates need your sudo password
+Passwordless sudo is not configured. Helix can detect a driver fault and stage the exact
+command, but cannot run `apt`/`dkms` unattended. Not worked around.

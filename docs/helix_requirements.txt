@@ -831,3 +831,5 @@ Every future HELIX implementation decision should be evaluated against:
 > **HELIX should become more capable without becoming unnecessarily
 > larger.** The goal is the smallest code base capable of delivering the
 > largest reliable set of free, working capabilities.
+
+## 30. One additional feature that is must, helix should be able to continuously check my university lms for assignments plus lab tasks submission deadlines plus it must be able to download any lecture file from lms(they already allow it) and read it and make assignments for me , and report me, and then with my confirmation , it should automatically upload it there , and also check my attendance and update me...

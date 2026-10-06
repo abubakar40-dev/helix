@@ -3218,3 +3218,47 @@ Applying the head-phrase rule to positions but not to the **query** broke
 the query was the full string. The query is now reduced the same way. Three regression
 cases added to `tools/check-office-match.py` (now 15/15), which also learned to reduce the
 query term so it tests the real behaviour.
+
+---
+
+## 2026-10-06 — Full re-seed, and a blind spot the re-seed exposed
+
+All 12 domains re-seeded under the corrected rules. Every domain now at 60 seeded
+figures (was: philosophy 60, science 60, mathematics 2→60, medicine 3→60, technology
+11→60, literature 18→60, art 3→60, economics 4→60, politics 59→60, war 49→60,
+religion 6→60, history 1→60). 190 stale rows pruned. Store: 14,530 entities,
+34,044 relations, 15.7 MB.
+
+New top-of-domain, all people with real birth/death dates:
+Hannah Arendt (272K) · Carl Sagan, Ibn al-Haytham · von Neumann, Noether, Lasker ·
+Franz Kafka, Conrad · Dalí, Bernini, El Greco · Gandhi, Mussolini, Bhutto ·
+Martin Luther King Jr., Malcolm X.
+
+### The birth-date rule had a blind spot, and the re-seed walked straight into it
+`medicine`'s new top three were **Lexie Grey, Helen Magnus, Callie Torres** — all TV
+characters. They *have* birth dates in Wikidata, so the people-vs-office rule could not
+touch them, and my earlier "fictional" filter missed them because their descriptions say
+"character from the television show Grey's Anatomy" and "Grey's Anatomy Character" —
+neither contains the word "fictional".
+
+Broadened to match `\bcharacter\b` and show/fiction phrasing. Removed 12 more rows
+across domains: Lexie Grey, Helen Magnus, Callie Torres, Jack Shephard, Apu
+Nahasapeemapetilon, Leo Fitz, Jake Sully, Gru, Phyllis Summers, Daniel Faraday.
+`medicine` now opens with Abu al-Qasim al-Zahrawi (936–1010).
+
+Note the honest ordering of my own mistakes here: I removed 41 fictional rows earlier and
+declared the problem solved, then the rule I added in between *let 12 more in*. A filter
+verified against one sample is not a verified filter.
+
+### Final state
+```
+office/term articles in seeded domains:        0
+fictional characters in seeded domains:        0
+seeded rows without a birth date:              0
+duplicate output lines (4 queries):            0
+genuine multi-term career preserved:           yes (Dowiyogo's Nauru terms)
+watchdog healthy:                              silent, exit 0
+check-office-match:                            PASS, 15/15
+office chancellor --year 1871:                 Bismarck, Imperial chancellor 1871-1890
+office President --year 1945:                  Tiso / Polanyi / Chiang / Tito / …
+```

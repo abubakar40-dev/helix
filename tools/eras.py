@@ -406,9 +406,16 @@ def seed(per, only, refresh, prune=False):
             # as "character in Shakespeare's Othello; a Moorish soldier…", and the
             # play itself as "theatrical play by William Shakespeare" — neither
             # says "fictional character", and both landed in `war`.
-            if desc and re.search(r"(?i)fictional|character in|\b(play|novel|opera|"
-                                  r"film|album|musical|poem|song|series)\b.{0,20}"
-                                  r"\bby\b", desc):
+            # Not just the literal phrase, and not just birth dates. Measured
+            # blind spot: Lexie Grey, Helen Magnus and Callie Torres took the top 3
+            # of `medicine` — all TV characters — and all three HAVE birth dates,
+            # so the people-vs-office rule could not touch them. Wikidata
+            # descriptions say "character from the television show Grey's Anatomy"
+            # and "Grey's Anatomy Character", neither of which contains "fictional".
+            if desc and re.search(r"(?i)fictional|\bcharacter\b|\bmain character\b"
+                                  r"|\b(play|novel|opera|film|album|musical|poem|song|"
+                                  r"series|tv|episode)\b.{0,24}\b(character|show|"
+                                  r"fiction|episode)\b", desc):
                 continue
             claims = ent.get("claims") or {}
             birth = death = None

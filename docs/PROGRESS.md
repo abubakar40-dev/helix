@@ -2879,3 +2879,151 @@ query change, and was not done unasked.
 mathematics 2, art 3, history 1. Those Wikipedia categories are small and were not
 re-chosen. Unchanged from the original seed and recorded again so it is not mistaken for
 newly broken.
+
+---
+
+## 2026-10-06 — Books of Eras: re-ranked on English article size, and three other root causes
+
+Asked to replace the notability signal and re-seed politics/war/history plus the thin
+mathematics/art/history domains, then to *prove* the fix rather than assume it. A
+`before` snapshot of the database and the seeded labels was taken first, so every
+comparison below is against real bytes rather than memory.
+
+### Old signal vs new signal
+
+| | old | new |
+|---|---|---|
+| notability | `len(sitelinks)` — how many language versions | **English Wikipedia article size in bytes** (`prop=revisions&rvprop=size`) |
+| why | language coverage | how much English Wikipedia actually says about the topic |
+| cost | free, already in the entity payload | one extra `revprop=size` on the category query |
+
+Sitelinks was a **language** proxy, so a Chilean president with many language versions
+outranked genuinely notable officeholders, and a Stanford CS professor landed in a
+history-of-politics seed.
+
+### There were three root causes, not one
+
+**1. The ranking (the one that was asked about).** Fixed as above.
+
+**2. The thin domains were never a ranking problem.** `mathematics=2, art=3, history=1`
+was blamed on ranking, and that was wrong. Measured:
+
+    Category:Mathematicians   2 pages, 27 subcategories (largest holds 1,285)
+    Category:Painters         2 pages
+    Category:Historians       2 pages
+    Category:Presidents      17 pages — mostly "President (government title)",
+                                        "Benjamin Harrison voice recording"
+
+Wikipedia had restructured these into subcategories, so the seed was reading a
+near-empty category. The real people are one level down. `gather()` now descends into
+subcategories, and mathematics additionally names `Mathematicians by century` / `by
+field`, because the top-level category's own subcategories are "by academic
+institution" and "by award" — the largest being 1,285 Fellows of the AMS, almost all
+obscure. Result: mathematics went from *"Aris Syntetos (10K), Abdul-Aziz Yakubu (9K)"*
+to **John von Neumann (208K), Emmy Noether (125K), Emanuel Lasker (113K)**.
+
+The earlier category validation was itself inadequate: it only checked that categories
+*exist*, never that they contained people. Checking existence and checking contents are
+different questions and I only did the first.
+
+**3. The "regression" was not the ranking.** After the re-seed, `office chancellor
+--year 1871` stopped answering. Cause: `store_claims` capped every property at 8
+claims, and **Wikidata does not order positions held by seniority** — Bismarck's `P39`
+list begins with *auscultator*, *Referendar* and *Legationsrat*, so an 8-claim cap kept
+his early jobs and discarded **Imperial chancellor**, the only row anyone asks for.
+`P39` is now capped at 40 and everything else stays at 8. Position records went from
+**56 → 4,587**.
+
+So the ranking change caused no regression at all; a claim cap did.
+
+### A wrong diagnosis of mine, corrected
+Mid-investigation I reported that Truman's presidency was stored as `+194 -> +195`, i.e.
+**decade precision**, and built a fix on that premise. That was wrong. My diagnostic
+truncated the timestamp to four characters, so `+1945-04-12` printed as `+194`. Reading
+the full strings showed day precision throughout.
+
+Checking the full strings did expose a *real* precision bug, just a different one:
+Bismarck's early offices are `+1835-00-00`, where `00` is an "unknown" sentinel meaning
+**year** precision. `year()` had required a day component and so discarded every
+year-precision date; a variant that read `00` as month 0 encoded 1835 as 183500, which
+compares as later than 1945 and excluded Bismarck from every year query. `span()` now
+returns a true YYYYMMDD interval: year precision → the whole year, month → the whole
+month, day → that day. Verified against Truman and Bismarck for 1944/1945/1953/1835/1900.
+
+### Other defects found and fixed while in there
+- **Orphan relations.** `store_claims` ran while building the candidate list, *before*
+  the top-N filter, so ~11k relations pointed at entities never inserted. Claims are now
+  stored only for rows actually kept.
+- **Re-seeding unioned old and new rows.** Nothing removed figures that fell out of the
+  top-N, so a re-ranked domain silently kept stale entries and the before/after diff was
+  measuring a union — which invalidated the first comparison attempt. Added `--prune`
+  (144 stale rows removed).
+- **`resolve_dangling` destroyed real rows.** It used `INSERT OR REPLACE`, so when
+  Bismarck fell out of the politics top-60 it overwrote his genuine row with a name-only
+  stub and wrote a *sitelink count* (219) into the column that now means article bytes.
+  Now `INSERT OR IGNORE`.
+- **`positions()` skipped `linked` figures**, so the stub Bismarck was never backfilled.
+- **`ask` matched on bare substrings.** Asked *"who was Otto von Bismarck"* it returned
+  **Doctor Who** (the token `who` substring-matched), and because that counted as a hit,
+  expansion never ran. With word-boundary matching fixed, it returned **Giotto** (`otto`
+  inside `Giotto`). Three fixes: a stopword list, word-boundary matching, and — crucially
+  — requiring ≥2 tokens to match before suppressing expansion. `expand` now tries the
+  whole phrase and adjacent bigrams, not loose tokens, which is what finally returned
+  *Otto von Bismarck (Q8442)* rather than *Otto*, the given name.
+- **Fictional people.** 41 rows in `war` were `fictional character from …`, reached
+  through the *Generals* subcategories and ranked high on article length — Darth Vader
+  among them. Now filtered (0 remain). Broadened after the first filter missed
+  *Othello*, described as "character in Shakespeare's Othello; a Moorish soldier…" rather
+  than as a "fictional character", and the play itself, "theatrical play by…".
+
+### Verification — the two named failure modes
+
+```
+$ eras office President --year 1945
+BEFORE  Richard Soher            executive vice president       (no dates — INVENTED)
+        Eberhard von Danckelmann Minister President of Prussia  (no dates — INVENTED)
+AFTER   Jozef Tiso              President of Slovakia           1939-1945
+        Chiang Kai-shek         President of the National Gov…  1943-1948
+        Josip Broz Tito         President of the Federal Exec…  1944-1963
+        Sveinn Björnsson        President of Iceland            1944-1952
+```
+Two undated fabrications → five real, dated officeholders.
+
+```
+$ eras office chancellor --year 1871        BEFORE Bismarck 1871-1890   AFTER same
+$ eras office "Minister President" --year 1865                      AFTER Bismarck 1862-1873
+```
+
+```
+office-holders by recorded offices
+  before  Bismarck=18 | Luis Alberto Sánchez=12 | Ito Bisonó=4 | Fernando Haddad=4
+  after   Xi Jinping=40 | Spencer Perceval=37 | Karlo Lukanov=35 | Bismarck=33
+
+domain counts
+  before  politics=36  war=22  history=1  mathematics=2  art=3
+  after   politics=59  war=49  history=60 mathematics=60 art=60
+seeded figures 226 → 449
+```
+The claim being fixed was that Sánchez and Socher *outranked* notable officeholders, and
+that 1945 had no dated answer. Both are fixed: the top four by offices are now genuine
+officeholders, and 1945 answers with dates.
+
+**Store: 14,362 entities, 124,202 relations, 15.5 MB.**
+
+### Honest limits that remain
+- **Richard Socher and Luis Alberto Sánchez are still in the seed.** Their *rank* changed
+  and they no longer dominate, but neither was eliminated — both have English articles
+  large enough to earn a slot. The original claim was misranking, not absence.
+- **Article size has its own bias**: it favours long, heavily-maintained articles, which
+  skew toward living politicians with templated career tables. Bismarck's ~180 KB article
+  now falls outside the politics top-60 and he is only present because `ask` expanded him
+  on demand — which is the designed path, and it works, but it means the seed alone would
+  have missed him.
+- **Substring matching still yields false positives**: `office President` returns *Lu
+  Muzhen*, whose position is "spouse of the president of the Republic of China". Matching
+  whole-word position names, or checking the person actually held a presidency, would fix
+  it; not done because it needs no re-seed and was not asked for.
+- **Duplicate display rows** (Lu Muzhen appears three times) come from claims whose
+  qualifiers differ slightly, making distinct primary keys. Cosmetic.
+- **`P39` covers 105 of 450 seeded figures**, and that is correct rather than incomplete:
+  Wikidata records positions held for officeholders, not for poets, novelists or painters.

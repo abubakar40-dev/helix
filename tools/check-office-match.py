@@ -46,6 +46,11 @@ CASES = [
     ("Member of the Reichstag of the German Empire", "President", False),
     ("Member of parliament", "chancellor", False),
     ("Referendar", "President", False),
+    # a query that itself contains " of " must be reduced the same way, or
+    # `office "President of Nauru"` silently finds nothing
+    ("President of Nauru", "President of Nauru", True),
+    ("President of Slovakia", "President of Nauru", True),
+    ("President of Slovakia", "spouse of the president", False),
 ]
 
 
@@ -53,7 +58,8 @@ def main():
     fails = []
     for label, term, want in CASES:
         head = eras.position_head(label)
-        got = bool(re.search(r"\b" + re.escape(term) + r"\b", head, re.I))
+        q = eras.position_head(term) or term
+        got = bool(re.search(r"\b" + re.escape(q) + r"\b", head, re.I))
         ok = got == want
         print(f"  {'ok  ' if ok else 'FAIL'} head={head[:40]:42} "
               f"query={term:20} -> {got} (want {want})")

@@ -71,6 +71,12 @@ CREATE TABLE IF NOT EXISTS predicate (id TEXT PRIMARY KEY, label TEXT);
 CREATE INDEX IF NOT EXISTS ix_label ON entity(label);
 CREATE INDEX IF NOT EXISTS ix_src  ON relation(src);
 CREATE INDEX IF NOT EXISTS ix_dst  ON relation(dst);
+-- SQLite lets PRIMARY KEY columns be NULL in an ordinary table, and NULLs never
+-- collide in a unique index, so "INSERT OR IGNORE" re-inserted every undated
+-- relation on every run: 124,202 rows for 31,493 real triples, 74% duplicates.
+-- COALESCE makes "no date" one value so OR IGNORE actually ignores.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_rel ON relation(
+  src, pred, dst, COALESCE(qual_start,-1), COALESCE(qual_end,-1));
 """
 
 PREDICATES = {
@@ -414,6 +420,21 @@ def seed(per, only, refresh, prune=False):
                     birth = y
                 if key == "d" and death is None:
                     death = y
+            # These domains seed PEOPLE, so require the one field that separates a
+            # person from an office, a term of office, or a country. Measured: the
+            # highest-ranked entries with no birth date were "First premiership of
+            # Mahathir Mohamad" (118K), "Premiership of Abiy Ahmed" (104K),
+            # "Premiership of Fidel Castro" (86K), "prime minister" (74K),
+            # "Hungary under Viktor Orbán" (57K) — all outranking real figures on
+            # article length alone.
+            #
+            # Ceiling, stated: a historical person with no P569 in Wikidata is
+            # dropped too. Coverage where measured: philosophy 95%, art 95%,
+            # mathematics 96%, history 83%, politics 76%; science 51%, war 26%.
+            # Those last two lose real figures, so the rule is a floor to raise per
+            # domain, not a universal truth.
+            if birth is None:
+                continue
             rows.append((qid, label, desc, kind, birth, death, None,
                          f"https://en.wikipedia.org/wiki/{t}" if t else None,
                          sizes.get(t, 0),
@@ -553,6 +574,18 @@ def position_head(label):
 def office(c, office_name, yr=None, n=15):
     """Who held a position, optionally during a given year. Matches the POSITION's
     name; the earlier version matched the holder's, so it could never match."""
+    # LIKE is only a cheap indexed prefilter — it cannot see word boundaries, and
+    # matching the whole label matches qualifiers and unrelated roles.
+    #
+    # Matching is on the position's LABEL head only. Matching its description as
+    # well was tried and reverted: descriptions are sentences rather than
+    # 'Head of Jurisdiction' names, so 'spouse of the president of Taiwan'
+    # re-admitted the exact false positive the head rule exists to remove.
+    #
+    # The query is reduced the same way, or `office "President of Nauru"` would
+    # find nothing: its head is "President", which is what positions carry.
+    q = position_head(office_name) or office_name
+    term = re.compile(r"\b" + re.escape(q) + r"\b", re.I)
     like = f"%{office_name}%"
     rows = c.execute("""SELECT h.label, h.qid, pos.label, pos.description,
                                r.qual_start, r.qual_end
@@ -562,14 +595,6 @@ def office(c, office_name, yr=None, n=15):
                         WHERE r.pred = 'P39'
                           AND (pos.label LIKE ? OR pos.description LIKE ?)""",
                      (like, like)).fetchall()
-    # LIKE is only a cheap indexed prefilter — it cannot see word boundaries, and
-    # matching the whole label matches qualifiers and unrelated roles.
-    #
-    # Matching is on the position's LABEL head only. Matching its description as
-    # well was tried and reverted: descriptions are sentences rather than
-    # 'Head of Jurisdiction' names, so 'spouse of the president of Taiwan'
-    # re-admitted the exact false positive the head rule exists to remove.
-    term = re.compile(r"\b" + re.escape(office_name) + r"\b", re.I)
     rows = [r for r in rows if term.search(position_head(r[2]))]
     if yr:
         y = int(yr)
@@ -588,7 +613,18 @@ def office(c, office_name, yr=None, n=15):
         return False
     rows.sort(key=lambda r: -(c.execute("SELECT notability FROM entity WHERE qid=?",
                                        (r[1],)).fetchone()[0] or 0))
-    for holder, hq, pos, _desc, a, b in rows[:n]:
+    # Dedupe at the resolution this actually prints. Separate terms are real and
+    # must all show — Bernard Dowiyogo was President of Nauru seven times — but two
+    # rows differing only in day precision render identically ("2003-2003"), so
+    # without this the same line appears twice.
+    seen, out = set(), []
+    for holder, hq, pos, _d, a, b in rows:
+        key = (holder, pos, yr_year(a), yr_year(b))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((holder, pos, a, b))
+    for holder, pos, a, b in out[:n]:
         ten = (f"{yr_year(a)}-{yr_year(b)}" if a is not None and b is not None
                else f"from {yr_year(a)}" if a is not None
                else f"until {yr_year(b)}" if b is not None else "")
@@ -676,12 +712,22 @@ def expand(c, terms):
         lab = ((ent.get("labels") or {}).get("en") or {}).get("value") or qid
         desc = ((ent.get("descriptions") or {}).get("en") or {}).get("value")
         sl = ((ent.get("sitelinks") or {}).get("enwiki") or {}).get("title")
+        # Record dates too. Without this an expanded person is indistinguishable
+        # from an office article — Bismarck had no birth or death date at all,
+        # because expand() wrote name and description only.
+        cl = ent.get("claims") or {}
+        b = year((cl.get("P569") or [{}])[0].get("mainsnak", {})
+                 .get("datavalue", {}).get("value", {}).get("time")) \
+            if cl.get("P569") else None
+        d = year((cl.get("P570") or [{}])[0].get("mainsnak", {})
+                 .get("datavalue", {}).get("value", {}).get("time")) \
+            if cl.get("P570") else None
         c.execute("INSERT OR REPLACE INTO entity VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                  (qid, lab, desc, "expanded", None, None, None,
+                  (qid, lab, desc, "expanded", b, d, None,
                    f"https://en.wikipedia.org/wiki/{sl}" if sl else None,
                    article_sizes([sl]).get(sl, 0) if sl else 0,
                    f"https://www.wikidata.org/wiki/{qid}", int(time.time())))
-        store_claims(c, qid, ent.get("claims") or {})
+        store_claims(c, qid, cl)
         n += 1
     c.commit()
     return n

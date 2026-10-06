@@ -3110,3 +3110,111 @@ Re-verified by reverting the fix again:
 - Duplicate display rows: claims whose qualifiers differ slightly become distinct
   primary keys, so one person/office pair can print three times. Cosmetic.
 - Article size still skews the seed toward living politicians; see the previous entry.
+
+---
+
+## 2026-10-06 — Pre-authorised services, and four fixes
+
+### Helix now controls printing, remote desktop and the phone link without asking
+
+The human explicitly waived the confirmation gate for CUPS (8000), GNOME Remote Desktop
+(3389) and GSConnect (1716). Written into `pc/SOUL.md`, with a matching note in the CEO
+SOUL so the CEO does not pause to ask on the way through.
+
+**Checked what actually exists before granting anything**, because a SOUL full of
+commands that do not run is a lie:
+
+| service | control surface | verified |
+|---|---|---|
+| CUPS | `cupsctl`, `lpadmin`, `lpstat`, `lp` | all present; scheduler running; 0 queues, no default destination |
+| GNOME Remote Desktop | `grdctl` (user-scope unit) | works. **Currently enabled on 3389, credentials auth, view-only: yes** |
+| GSConnect | *none* | see below |
+
+**GSConnect is not KDE Connect and has no control surface.** Measured: the daemon on 1716
+is `gjs -m …/gsconnect@andyholomes.github.io/service/daemon.js` — the GNOME Shell port.
+There is no `kdeconnect-cli` and no `kded`; `org.kde.kdeconnect` and `org.gnome.GSConnect`
+both return `ServiceUnknown`; it owns no gsettings schema; and `gnome-extensions disable`
+does **not** stop it — the port stayed bound after disabling and re-enabling. So the only
+things that actually work are killing the daemon (drops the phone link) or the human
+using the extension's own preferences. The SOUL says exactly that and forbids inventing
+a control surface.
+
+**What stays runtime-gated regardless of the SOUL.** Found the real mechanism:
+`hermes-agent/tools/approval_detection.py` `DANGEROUS_PATTERNS`. It hard-blocks
+`systemctl … stop|restart|disable|mask`, `pkill -9`, `kill -9 -1`, `killall -9`/`-r`,
+`rm -rf`, `mkfs`, `dd`, world-writable `chmod`, SQL DROP/TRUNCATE and similar.
+`cupsctl`, `lpadmin`, `grdctl` and `gnome-extensions` are **not** in that list. So
+`systemctl --user restart gnome-remote-desktop` will still prompt and `grdctl` will not —
+the SOUL says to use `grdctl` and to report a block rather than reword around it.
+
+Also noted: the old pc SOUL claimed these were "hard-blocked by the runtime
+(`approvals.deny`)". No such key exists in `config.yaml`, and the mechanism is actually
+`approval_detection.py`. Corrected in the new text.
+
+### Fix 1 — duplicate rows: a SQLite quirk, 74% of the table was junk
+
+Not qualifier drift, as guessed. **SQLite permits NULL in `PRIMARY KEY` columns of an
+ordinary table**, and NULLs never collide in a unique index — so `INSERT OR IGNORE`
+re-inserted every *undated* relation on every single run:
+
+    124,202 rows for 31,493 real (src,pred,dst) triples   ->  92,709 duplicates (74%)
+
+Fixed with a `UNIQUE INDEX` over `COALESCE(qual_start,-1), COALESCE(qual_end,-1)` so
+"no date" is one value and `OR IGNORE` actually ignores. Collapsed existing duplicates
+(124,202 → 32,019 rows) and proved it: inserted the same undated row three times, got one.
+
+Display also dedupes now, at the resolution it prints. Real multi-term careers must all
+still show — Bernard Dowiyogo was President of Nauru seven times, and he still lists seven
+times — but two rows differing only in day precision both render "2003-2003".
+
+### Fix 2 — the "recency bias" was mostly misdiagnosed
+
+I had recorded article size as skewing toward living politicians. Checking the actual
+seed, that is **not** the dominant problem: of 59 politics entries, **18 were born before
+1900** and the top of the list is Gandhi, Mussolini, Bhutto, Antonescu, Jefferson Davis,
+Lumumba — correct.
+
+The real pollution was **office and term articles in a people seed**: "First premiership of
+Mahathir Mohamad" (118K), "Premiership of Abiy Ahmed" (104K), "Premiership of Fidel Castro"
+(86K), "prime minister" (74K), "Hungary under Viktor Orbán" (57K) — all outranking real
+figures on article length alone.
+
+Fixed by requiring a birth date, which separates a person from an office without needing
+another API call — P569 was already being fetched. literature re-seeded as the test:
+**18 → 60 entries**, Franz Kafka / Joseph Conrad / Vargas Llosa / Chinua Achebe at the top.
+
+Stated ceiling: a historical person with no P569 in Wikidata is dropped too. Coverage
+where measured — philosophy 95%, art 95%, mathematics 96%, history 83%, politics 76%,
+science 51%, war 26%. So this is a floor to raise per domain, not a universal truth.
+
+Bismarck's absence was also **not** recency: his article is 175K against a politics cutoff
+of 41K, so size would have taken him first. He is absent because the category descent did
+not reach the subcategory holding him, and because `expand()` never wrote birth/death.
+`expand()` now records both.
+
+### Fix 3 — watchdog: real thresholds, four new checks
+
+The old watchdog's memory floors (250MB/500MB) could never fire on a machine whose normal
+resting state is 1.3GB+ with Ollama holding 2GB for `qwen2.5:3b`. They were theatre.
+Replaced with 600/1000MB plus a "top process" line naming the actual hog.
+
+Added, each fault-injected to prove it fires:
+- **RAM floors** 600/1000MB + top-process RSS ≥1500MB → fires `MEMORY CRITICAL`, `TOP PROCESS`
+- **Context headroom** — reads `last_prompt_tokens` from the gateway's `gateway_routing`
+  table, warns at 120k/180k. Measured now: **47,993**. Had to use `python3` + a read-only
+  SQLite URI, **not** `sqlite3`, which is not installed here — the first version would have
+  silently never fired.
+- **Service checks** extended to `helix-live` and `helix-globe`, which were running but
+  unwatched → fires `SERVICE DOWN`
+- **Books of Eras staleness** — db mtime > 21 days → fires `ERAS STALE`
+
+Verified silent when healthy (exit 0, zero bytes), which is what 13 of the last 15
+suppressed runs were doing correctly.
+
+### Fix 4 — one regression I introduced and caught
+
+Applying the head-phrase rule to positions but not to the **query** broke
+`office "President of Nauru"` — it returned nothing, because the head is "President" and
+the query was the full string. The query is now reduced the same way. Three regression
+cases added to `tools/check-office-match.py` (now 15/15), which also learned to reduce the
+query term so it tests the real behaviour.

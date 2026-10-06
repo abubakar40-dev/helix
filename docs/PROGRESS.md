@@ -2815,3 +2815,19 @@ their decision.
 - **Easy Diffusion** — needs a multi-GB install and CPU-only generation is minutes per
   image on this box. Real capability gap (Helix can source photos via Openverse but
   cannot *create* one), but a heavy install on constrained hardware: the human's call.
+
+### 2026-10-06 — crash loop disabled (human's decision)
+
+Human chose **disable** over repointing. Executed `systemctl --user disable --now
+jarvis-claude-gateway.service`, verified rather than assumed:
+
+    is-enabled: disabled      is-active: inactive      NRestarts: 0
+
+Unit file deliberately left on disk, so restoring the old Jarvis from
+`jarvis-old-archive/` later is one command. No other unit is in `auto-restart` or
+`failed`. All four Helix units still running: helix-bridge, helix-globe, helix-live,
+hermes-gateway.
+
+Easy Diffusion: human chose **skip**. So §23-era gaps stand as recorded — Helix can
+source photographs via Openverse but cannot generate an image, and the `matplotlib`
+charts alternative was also declined. Not revisited unless asked.

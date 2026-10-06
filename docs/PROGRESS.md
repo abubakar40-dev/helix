@@ -3027,3 +3027,86 @@ officeholders, and 1945 answers with dates.
   qualifiers differ slightly, making distinct primary keys. Cosmetic.
 - **`P39` covers 105 of 450 seeded figures**, and that is correct rather than incomplete:
   Wikidata records positions held for officeholders, not for poets, novelists or painters.
+
+---
+
+## 2026-10-06 — eras office: whole-word matching on the position's HEAD, not its whole label
+
+Fixed the substring bug recorded as a remaining limit: `eras office President`
+returned **Lu Muzhen**, whose position is *"spouse of the president of the Republic
+of China"*.
+
+### Word boundaries alone would NOT have fixed it
+The obvious fix is `\bPresident\b`, and it does not work: `president` **is** a whole
+word in *"spouse of the president of…"*. Verified before implementing.
+
+What identifies the office is that Wikidata names positions **`Head of Jurisdiction`**
+— "President of Slovakia", "Chancellor of the Exchequer", "Minister President of
+Prussia". So the part before the first `" of "` is the office, and everything after it
+qualifies it or belongs to a different concept:
+
+    position_head("spouse of the president of the Republic of China") -> "spouse"
+    position_head("Minister President of Prussia")                   -> "Minister President"
+    position_head("President of the Federal Executive Council of…")  -> "President"
+
+Matching is `\b<term>\b` **against that head**, not against the start of it — otherwise
+`office chancellor` would stop finding *"Imperial chancellor"*, the flagship answer.
+
+### The description fallback was the actual leak, and I nearly kept it
+The first attempt still returned Lu Muzhen. Cause: the query also matched
+`pos.description`, and that description is *"spouse of the president of Taiwan"* —
+which contains "president" as a whole word. Descriptions are sentences, not
+`Head of Jurisdiction` names, so applying office-name parsing to them is a category
+error. Matching is now on the label head only.
+
+Also note my first diagnostic of this reported the description as **not** matching. That
+was wrong — the shell heredoc turned `\b` into a literal backslash, so the regex was
+matching an escaped backslash instead of a word boundary. The filter was fine; the
+measurement was not. Same class of error as the earlier `t[:4]` timestamp truncation:
+a sloppy probe reported as a finding.
+
+### Verified with the reported case
+```
+$ eras office President --year 1945
+  Jozef Tiso         President of Slovakia                              1939-1945
+  Chiang Kai-shek    President of the National Government of China      1943-1948
+  Josip Broz Tito    President of the Federal Executive Council         1944-1963
+  Sveinn Björnsson   President of Iceland                               1944-1952
+  Tai Chi-tao        President of the Examination Yuan                   1928-1948
+```
+Lu Muzhen rows across every query shape: **0** (no year, 1912, 1920, 1945). She is still
+reachable as what she actually was — `office spouse` returns her.
+
+No regression: `office chancellor --year 1871` → Bismarck 1871-1890, and
+`office "Minister President" --year 1865` → Bismarck 1862-1873.
+
+### More than the reported bug
+The description path was admitting **24 "First Lady of …" positions** as Presidents
+too, for the same reason — their descriptions mention the presidency. Across the whole
+store, 545 `LIKE` matches reduce to 450 kept and 28 distinct rejected, including
+"First Lady of Poland", "First Concubine of Romania", "spouse of the President of the
+PRC" and "Presidents of the Bulgarian Academy of Sciences".
+
+Two rows legitimately still match: "Vice President of SOCAR" and "First Vice President
+of SOCAR". A vice-presidency is a real presidency, so this is a judgement call, not a
+defect — recorded rather than silently decided.
+
+### The check could not fail, so it was rewritten
+`tools/check-office-match.py` was written with the filter logic **duplicated inline**
+instead of calling `office()`. Verified by reverting the fix in `eras.py`: the check
+still printed PASS. A check that cannot fail is worse than no check, so it now calls
+`office()` and asserts on its captured output, plus guards the two flagship queries.
+
+Re-verified by reverting the fix again:
+
+    reverted  ->  FAIL: 3 spouse-of-president row(s), Lu Muzhen, exit 1
+    restored  ->  PASS, exit 0
+
+12/12 label-head unit cases, including that `office President` must still match
+"Minister President of Prussia" and `office chancellor` must still match
+"Imperial chancellor".
+
+### Still open (unchanged, not in scope here)
+- Duplicate display rows: claims whose qualifiers differ slightly become distinct
+  primary keys, so one person/office pair can print three times. Cosmetic.
+- Article size still skews the seed toward living politicians; see the previous entry.

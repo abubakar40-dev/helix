@@ -530,18 +530,47 @@ def resolve_dangling(c):
     return n
 
 
+def position_head(label):
+    """The head phrase of a Wikidata position label, i.e. the part before the
+    first ' of '.
+
+    Wikidata names positions 'Head of Jurisdiction' — 'President of Slovakia',
+    'Chancellor of the Exchequer', 'Minister President of Prussia'. That makes the
+    head phrase the part that actually identifies the office. Everything after it
+    qualifies the office, or belongs to a different concept entirely.
+
+    This is what fixes `office President` returning Lu Muzhen, whose position is
+    'spouse of the president of the Republic of China': head 'spouse', so no
+    longer a presidency. Plain word-boundary matching does NOT fix that case —
+    'president' is a whole word in that string — which is why the head phrase is
+    needed rather than \\b alone.
+    """
+    if not label:
+        return ""
+    return re.split(r"\s+of\s+", label, maxsplit=1)[0]
+
+
 def office(c, office_name, yr=None, n=15):
-    yr_ = yr_year  # keep the arg name distinct from the year-rendering helper
     """Who held a position, optionally during a given year. Matches the POSITION's
     name; the earlier version matched the holder's, so it could never match."""
     like = f"%{office_name}%"
-    rows = c.execute("""SELECT h.label, h.qid, pos.label, r.qual_start, r.qual_end
+    rows = c.execute("""SELECT h.label, h.qid, pos.label, pos.description,
+                               r.qual_start, r.qual_end
                         FROM relation r
                         JOIN entity pos ON pos.qid = r.dst
                         JOIN entity h   ON h.qid   = r.src
                         WHERE r.pred = 'P39'
                           AND (pos.label LIKE ? OR pos.description LIKE ?)""",
                      (like, like)).fetchall()
+    # LIKE is only a cheap indexed prefilter — it cannot see word boundaries, and
+    # matching the whole label matches qualifiers and unrelated roles.
+    #
+    # Matching is on the position's LABEL head only. Matching its description as
+    # well was tried and reverted: descriptions are sentences rather than
+    # 'Head of Jurisdiction' names, so 'spouse of the president of Taiwan'
+    # re-admitted the exact false positive the head rule exists to remove.
+    term = re.compile(r"\b" + re.escape(office_name) + r"\b", re.I)
+    rows = [r for r in rows if term.search(position_head(r[2]))]
     if yr:
         y = int(yr)
         lo, hi = y * 10000 + 101, y * 10000 + 1231   # any day within that year
@@ -552,17 +581,17 @@ def office(c, office_name, yr=None, n=15):
             if a is None and b is None:
                 return False
             return (b is None or b >= lo) and (a is None or a <= hi)
-        rows = [r for r in rows if held(r[3], r[4])]
+        rows = [r for r in rows if held(r[4], r[5])]
     if not rows:
         print(f"  no stored holder of '{office_name}'" + (f" during {yr}" if yr else ""))
         print("  try: eras find <name>, or ask research to expand it")
         return False
     rows.sort(key=lambda r: -(c.execute("SELECT notability FROM entity WHERE qid=?",
                                        (r[1],)).fetchone()[0] or 0))
-    for holder, hq, pos, a, b in rows[:n]:
-        ten = (f"{yr_(a)}-{yr_(b)}" if a is not None and b is not None
-               else f"from {yr_(a)}" if a is not None
-               else f"until {yr_(b)}" if b is not None else "")
+    for holder, hq, pos, _desc, a, b in rows[:n]:
+        ten = (f"{yr_year(a)}-{yr_year(b)}" if a is not None and b is not None
+               else f"from {yr_year(a)}" if a is not None
+               else f"until {yr_year(b)}" if b is not None else "")
         print(f"  {holder:32} {pos[:38]:40} {ten}")
     return True
 

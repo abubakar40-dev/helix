@@ -3678,3 +3678,100 @@ Not removed unilaterally — it is the human's tool inventory.
 Both rules hold in substance. One real violation found and fixed (dead code), one real
 duplication found and honestly characterised rather than papered over, and §3.1's own
 named enforcement mechanism verified live instead of trusted.
+
+### Point 4 — §4 Core Technology Stack: verified, and the OpenCode leg was broken
+
+§4 is a set of stack decisions, so each was checked against the live system.
+
+| §4 decision | measured | verdict |
+|---|---|---|
+| Hermes Agent at `~/.hermes`, systemd `hermes-gateway` | `v0.21.5+4533.g39faafb`, `enabled`, `active`, **NRestarts=0** | ✅ |
+| Do **not** build a competing runtime | nothing in `~/helix` implements an agent loop; the bridge is SSE over `kanban.db` | ✅ |
+| Sub-agents = real Hermes profiles | all 9 have `config.yaml`, `.env` with a working key, own `SOUL.md`, trimmed toolsets | ✅ |
+| Profile ids lowercase/alphanumeric | `career comm dev document pc research sysmon vision` — all match `^[a-z0-9]+$` | ✅ |
+| Provider = OpenRouter, key configured | `base_url` = `https://openrouter.ai/api/v1` on all 9 | ✅ |
+| **Groq deliberately not used** | 0 references in any config | ✅ |
+| **NVIDIA NIM deliberately not used** | 0 references in any config | ✅ |
+| No paid tier anywhere | 0 paid models (point-1 audit) | ✅ |
+| Kanban is the task board | `kanban.db`, 8 tables, 39 tasks (35 done, 4 archived) | ✅ |
+| **Tavily on the research profile** | `web.backend: tavily` + `TAVILY_API_KEY` present in its `.env` | ✅ |
+| Coding work via **OpenCode** | works — but see below | ⚠ was broken in the agent path |
+
+#### ❌ OpenCode worked from my shell and was broken for the `dev` agent
+
+Brief open issue #3 said "opencode run has no working model". **That is stale**, and the
+reason it looked true is the real finding.
+
+OpenCode runs **its own free gateway**, entirely separate from OpenRouter, needing no
+authorisation. Measured, not assumed:
+
+```
+opencode run -m opencode/nemotron-3.5-lightning-free "…"      -> PING-OK
+  read oc-test.txt      -> returned exact contents "line one / line two"
+  write oc-out.txt      -> real 14-byte file, contents HELIX-VERIFIED
+  --file <report>       -> DISPATCH-WORKS  (the exact invocation dispatch() uses)
+opencode run -m opencode/nemotron-3-ultra-free "…"            -> ULTRA-OK
+```
+
+**But `opencode auth list` shows only OpenRouter authorised, and that account has 0
+credits.** So `openrouter/…` fails with *"Insufficient credits"* — and the **bundled
+`opencode` skill's own documented example is
+`opencode run '…' --model openrouter/anthropic/claude-sonnet-4`**. The `dev` SOUL says
+"drive OpenCode, use the bundled skill" and never names a model. So `dev` was being
+walked straight into a paid-model failure by its own instructions, on a project whose
+first rule is free-only.
+
+Fixed at the source — one paragraph in `dev/SOUL.md` naming `opencode/*` over
+`openrouter/*`, with the measured evidence and the instruction not to report "no model
+available" before trying the `opencode/*` list. **The bundled skill was not edited**: it
+is Hermes-owned and would be overwritten on update, so the correction belongs in Helix's
+own file.
+
+Also corrected in `tools/selfcheck.py`: `DISPATCH_MODELS` was
+`[ollama/qwen2.5:3b, google/gemini-3.8-flash, openrouter/stealth/space-bunny-alpha]` —
+**all three dead**, two of them documented as dead in the comment beside them. Replaced
+with the two measured-working `opencode/*` models plus the old links as last resorts.
+
+#### ❌ And `opencode run` was silently failing on a permission, not on a model
+
+With a working model, `dispatch()` still failed: **"The user declined this tool call"**.
+That reads like a model problem and is not one. `--print-logs` gave the real line:
+
+```
+permission requested: external_directory (/home/abubakargcx/*); auto-rejecting
+```
+
+OpenCode's `external_directory` permission **defaults to `"ask"`**, and in a
+non-interactive `run` an "ask" auto-rejects. A cron bug means looking in `~/.hermes`,
+which is outside the `~/helix` workspace, so the dispatch died on its first step.
+
+Fixed with **`--auto`** on that one invocation. Chosen over editing
+`~/.config/opencode/opencode.json` on purpose: `--auto` is per-call, so it cannot widen
+permissions for every other opencode session on this box, and explicit `deny` rules are
+still enforced.
+
+#### ❌ A real false positive in `selfcheck.py`, found by reading the bug it reported
+
+The `critical` it kept alerting on was `cron job 9284054cf53e status=failed`. The query
+was `WHERE status != 'completed'` over the **whole history**. That job failed **once, on
+2026-10-01**, and has since completed and delivered on 10-04, 10-06 and 10-07. A
+six-day-old resolved failure was being re-alerted daily as though it were happening now.
+
+Fixed to join each job's **most recent** execution. `1 critical` → `0 critical`.
+
+**Verified in both directions**, because a check that only ever goes quiet is unproven —
+the same discipline applied to the watchdog earlier:
+
+```
+OLD query reported : A_recovered, B_currently_broken
+NEW query reports  : B_currently_broken
+  PASS  A_recovered         reported=False  (failed once, succeeded 3x since)
+  PASS  B_currently_broken  reported=True   (latest run failed)
+  PASS  C_always_ok         reported=False  (never failed)
+FALSE POSITIVE the fix removes: ['A_recovered']
+SELFTEST: PASS
+```
+
+This is the recurring failure class in this project wearing a new hat: **a stale
+historical fact reported as current state**. It is why the counters in the voice work had
+to be made loud.

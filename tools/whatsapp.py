@@ -34,6 +34,23 @@ CHAT_FILE = os.path.join(HERMES, "cron", "executions.db")
 ENV_FILE = os.path.join(HERMES, ".env")
 
 
+def deliver_target(chat_id, entry):
+    """The address cron actually delivers to.
+
+    Measured: the two working cron jobs carry `deliver: whatsapp:923203814829` —
+    the phone number, taken from `origin.user_id`. The routing table's
+    `origin.chat_id` is `279503771283483@lid`, a RELAY id, not a phone number. My
+    first spool used the @lid and the gateway recorded `delivery=delivered` while
+    the message went nowhere — which is why the human received nothing. So the
+    phone number is the only address proven to work.
+    """
+    o = (entry or {}).get("origin") or {}
+    uid = o.get("user_id") or ""
+    if "@" in uid:
+        return uid.split("@")[0]
+    return (chat_id or "").split("@")[0].split(":")[-1]
+
+
 def paired_chat():
     """The chat id the gateway routes to, read from its own routing table."""
     db = os.path.join(HERMES, "state.db")
@@ -47,12 +64,12 @@ def paired_chat():
             d = json.loads(ej)
             o = d.get("origin") or {}
             if o.get("platform") == "whatsapp":
-                return o.get("chat_id"), (o.get("user_name") or "unknown")
+                return o.get("chat_id"), (o.get("user_name") or "unknown"), d
     except Exception:
         pass
     finally:
         c.close()
-    return None, None
+    return None, None, None
 
 
 def load_env():
@@ -114,11 +131,11 @@ def do_call():
     rings their phone from whatever device they read the message on. That is a genuine
     WhatsApp call, not a simulation.
     """
-    chat, name = paired_chat()
+    chat, name, entry = paired_chat()
     if not chat:
         print("  no paired WhatsApp chat found")
         return 1
-    num = chat.split("@")[0].split(":")[-1]
+    num = deliver_target(chat, entry)
     url = f"https://wa.me/{num}"
     body = (f"{name}, Helix is calling you.\n\n"
             f"Answer here: {url}\n\n"
@@ -130,11 +147,13 @@ def do_call():
 
 
 def do_status():
-    chat, name = paired_chat()
+    chat, name, entry = paired_chat()
     print(f"  paired chat : {chat or 'NONE'}")
     print(f"  contact     : {name or '-'}")
     if chat:
-        print(f"  call link   : https://wa.me/{chat.split('@')[0]}")
+        num = deliver_target(chat, entry)
+        print(f"  deliver to  : whatsapp:{num}   <- phone number, the proven address")
+        print(f"  call link   : https://wa.me/{num}")
     db = CHAT_FILE
     if os.path.exists(db):
         c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -171,10 +190,11 @@ def main():
     if a.cmd == "call":
         return do_call()
 
-    chat, name = paired_chat()
+    chat, name, entry = paired_chat()
     if not chat:
         print("  no paired WhatsApp chat found")
         return 1
+    print(f"  delivering to whatsapp:{deliver_target(chat, entry)}")
     if not a.text and not a.file:
         print("  give me text or --file")
         return 1

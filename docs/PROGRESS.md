@@ -3445,3 +3445,83 @@ push or history rewrite still asks.
 ### Driver updates need your sudo password
 Passwordless sudo is not configured. Helix can detect a driver fault and stage the exact
 command, but cannot run `apt`/`dkms` unattended. Not worked around.
+
+---
+
+## 2026-10-07 — Points 1-30 pass: baseline measured before building anything
+
+Starting the §1-§30 walkthrough. Nothing was built in this entry; it is the measurement
+that every later point depends on, taken first so no point inherits an unverified premise.
+
+### Starting state (all measured, not read off the previous summary)
+
+| | measured |
+|---|---|
+| services | `hermes-gateway`, `helix-bridge`, `helix-live`, `helix-globe` — all **active** |
+| profiles | **9** — `default`(helix), research, pc, dev, vision, comm, sysmon, career, document |
+| bridge endpoints | `/`, `/state`, `/cortex`, `/headlines`, `/agent-town/`, `/voice-core/`, `/world-monitor/` — all **200**; globe 4173 **200**; live 8788 **426** (expected: WebSocket-only, refuses plain GET) |
+| agent status | all 9 **idle** |
+| CEO tools | 8 — `clarify, delegation, file, kanban, memory, skills, todo, web`. No terminal, no code execution: it delegates, per §6.1 |
+| fallback chains | 3 deep on **all 9** profiles |
+
+### Delegation re-proved live, because §1's whole claim rests on it
+Task `t_2a6bc17a` → `sysmon`, dispatched via Kanban: **done in 32s**, worker summary
+`Total RAM is 6.9 GiB, reported via free -h`. Re-checked with `free -g` independently.
+
+**My first two probes of this task were both wrong, and are worth recording:**
+1. `hermes kanban create --title …` → `unrecognized arguments`. Title is **positional**.
+2. A `--json` poll that read `.get('status')` returned `None` for 28 consecutive checks
+   and I nearly called it a hung task. `show --json` does not put `status` at the top
+   level in the way `list --json` does. The task was `done` the whole time.
+   Same family as the earlier `t[:4]` and `[^a-zऀ-ۿ]` probes: **a sloppy probe reported
+   as a finding.** Verified with plain `hermes kanban show` before believing either.
+
+### 🔴 Real defect found: the primary model on 8 of 9 profiles is dead
+
+`stealth/space-bunny-alpha` is the `model.default` on research/pc/dev/vision/comm/sysmon/
+career/document. It is **absent from all 465 models** in the live OpenRouter catalog, and a
+direct completion returns:
+
+```
+HTTP 404  {"error":{"message":"No endpoints found for stealth/space-bunny-alpha."}}
+```
+
+It has not served a successful call in **3.4 days** (`session_model_usage`, last
+`2026-10-03 19:32`). Every one of those profiles is silently burning a failed primary
+before falling through to fb1.
+
+**Measured cost**, same query, same box, 2 runs each:
+
+| profile | primary | wall |
+|---|---|---|
+| `sysmon` | dead space-bunny | 16.84 s / 17.16 s |
+| `helix` | live nemotron-lightning | 8.86 s / 7.10 s |
+
+**~2x latency on every sub-agent call**, purely from a dead model id. Not fatal — the
+3-deep chain absorbs it — which is exactly why it has gone unnoticed: nothing fails, it is
+just permanently slow. §11 lists space-bunny as P1 and PROGRESS.md recorded it as
+"available"; both are now false, re-verified against the catalog rather than trusted.
+
+### Correcting two claims in the task brief, both measured
+
+1. **`poolside/laguna-s-2.1` is NOT free.** Un-suffixed it returns
+   `HTTP 402 Insufficient credits. This account never purchased credits.` Only
+   `poolside/laguna-s-2.1:free` generates (verified). The brief listed the bare id as a
+   working free model; it would have failed under the free-only rule.
+2. **`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` is also gone** — absent from the
+   catalog. The `:free` suffixed variant *does* exist and generates.
+   Live `:free` set: nemotron-3.5-lightning, nemotron-3-ultra-550b-a55b,
+   nemotron-3-super-120b-a12b, nemotron-3-nano-omni-30b-a3b-reasoning.
+
+### Free-only audit: clean
+Scripted check of every model referenced by all 9 profiles against the live catalog.
+**Zero paid models.** `ollama/qwen2.5:3b` and `openrouter/free` are correctly exempt
+(local / auto-router-to-free). My first version of this script flagged `qwen2.5:3b` as
+"NOT IN CATALOG" — it checked openrouter's catalog for a local ollama model. The audit
+was wrong, not the config; corrected rather than reported as a finding.
+
+### §1 verdict
+The vision is real and the delegation chain under it genuinely works. The one thing §1
+demands that is currently untrue is the **online-first reasoning layer (§1, §5.2, §11)**:
+8 of 9 profiles are pointed at a model that no longer exists. Fixing that is point 11's
+job; recorded here so point 11 starts from the measurement, not the old priority table.

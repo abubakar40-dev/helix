@@ -3525,3 +3525,69 @@ The vision is real and the delegation chain under it genuinely works. The one th
 demands that is currently untrue is the **online-first reasoning layer (§1, §5.2, §11)**:
 8 of 9 profiles are pointed at a model that no longer exists. Fixing that is point 11's
 job; recorded here so point 11 starts from the measurement, not the old priority table.
+
+### Point 2 — §2 Environment & Hardware Constraints (measured; nothing to build)
+
+§2 is a statement of fixed facts, so the deliverable is the measurement and the
+corrections. **Every decision §2 drives turns out to be correct.** Two of its stated
+facts are imprecise and one material fact is missing entirely.
+
+| §2 claim | measured | verdict |
+|---|---|---|
+| Ubuntu 26.04.1 LTS | `Ubuntu 26.04.1 LTS`, kernel `7.0.0-34-generic` | ✅ exact |
+| Intel i5, 4 CPUs | i5-7300U, 4 CPUs, 2 threads/core | ✅ exact |
+| 6.9 GB total RAM | 7,383,576,576 B = **6.9 GiB** | ✅ exact |
+| "~1 GB free often" | **447 MB** seen today by the watchdog (real alert, not inferred) | ✅ substantiated |
+| ~70 GB free disk, "not a constraint" | **58 GB** free of 135 GB (56%) | ⚠ drift, harmless |
+| **"No GPU"** | **there is one: Intel HD 620 integrated** | ❌ wrong as stated |
+| local inference = fallback, never primary | `ollama/qwen2.5:3b` is **fb3 on all 9** profiles | ✅ holds |
+| never a sub-1B model | `qwen2.5:3b`, 1.9 GB | ✅ holds |
+| laptop not 24/7 | uptime 1h43m, booted 07:39 today; `Linger=yes` | ✅ accurate |
+
+### ❌ "No GPU" is wrong — but it does not change any conclusion
+
+`lspci` reports `00:02.0 VGA compatible controller: Intel Kaby Lake-U GT2 [HD Graphics
+620]`. There is also `/dev/dri/card1` + `renderD128`.
+
+It is an **integrated** GPU with no CUDA and no ROCm — nothing here can run a 7B model,
+so every conclusion §2 draws from "no GPU" still holds. But the fact as written is false,
+and it is the kind of false fact that later gets "rediscovered" and re-litigated. The
+honest statement is *"no discrete GPU; an Intel HD 620 iGPU is present, useless for LLM
+inference."*
+
+Not treated as a defect needing a code fix, because there is nothing to fix — the
+constraint it supports is real either way.
+
+### ➕ A material fact §2 omits: there is 4 GB of swap
+
+```
+/swap.img  file  4G  USED 304.2M
+```
+
+§2 reasons entirely from "6.9 GB RAM, often ~1 GB free", which reads as a hard ceiling.
+There is a 4 GB swap file underneath that. It does not rescue a 7B model — swapping is
+thrashing, not inference — but it changes what "we are out of memory" means, and §2
+never says so. Recorded because the reasoning built on §2 should have known.
+
+### Why `qwen2.5:3b` is right and §2's stated preference (7B/8B) is not usable here
+
+§2 and §10 both say to prefer a 4-bit **Qwen2.5 7B or Llama 3.1 8B**. Measured:
+
+```
+MemAvailable now       1.86 GiB   (dipped from 3.7 during this very test)
+observed minimum       447 MB     (real watchdog alert today)
+a 4-bit 7B would need ~4.7 GB     <- more than the whole machine's free RAM
+```
+
+7B would have to live entirely in swap. So **3B is the correct deviation from §2's own
+preference on this hardware**, and it clears §2's other constraint (never sub-1B).
+
+**And the local fallback is genuinely alive, not just configured** — loaded and run:
+
+```
+$ ollama qwen2.5:3b  "Reply with exactly: LOCAL-OK"
+  response: 'LOCAL-OK'      7.73 tokens/sec      9.9 s wall
+```
+
+Worth proving, because it is fb3 — a broken last link would be invisible until both cloud
+models failed at once, which is the worst possible moment to discover it.

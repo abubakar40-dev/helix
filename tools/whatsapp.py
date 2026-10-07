@@ -72,17 +72,6 @@ def paired_chat():
     return None, None, None
 
 
-def load_env():
-    env = dict(os.environ)
-    if os.path.exists(ENV_FILE):
-        for line in open(ENV_FILE):
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                env[k.strip()] = v.strip().strip('"').strip("'")
-    return env
-
-
 async def send_via_gateway(chat_id, content, media=None):
     """Outbound WhatsApp, honestly bounded.
 

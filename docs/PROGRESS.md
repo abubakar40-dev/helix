@@ -3591,3 +3591,90 @@ $ ollama qwen2.5:3b  "Reply with exactly: LOCAL-OK"
 
 Worth proving, because it is fb3 — a broken last link would be invisible until both cloud
 models failed at once, which is the worst possible moment to discover it.
+
+### Point 3 — §3 Engineering Philosophy: minimalist code + reuse before building
+
+§3 is two rules, both auditable, so I audited instead of asserting.
+
+#### §3.1 "enforce this with the ponytail plugin" — ✅ genuinely live
+
+Installed and **verified doing something**, not merely present:
+
+- `~/.config/opencode/opencode.json` → `"plugin": ["@filecrop/opencode-ponytail-v2"]`
+- package present on disk; `node -e "import('./index.js')"` → **IMPORT OK**
+- `opencode debug config --log-level debug --print-logs` → **no plugin load error**
+- the six `ponytail` skills are live in the session that wrote this entry
+
+**Two corrections to §3.1 as written:**
+1. It names `DietrichGebert/ponytail`. That package implements only the **V1** plugin
+   API, and opencode 2.0.16 refuses it outright (*"Plugin must export a default
+   definition with an id and an effect or setup function"*) — the plugin's own header
+   says so. A **V2 port** (`@filecrop/opencode-ponytail-v2`) is what is installed. So
+   §3.1's literal instruction is not executable on this box; the substituted package
+   carries upstream's instruction text and skills byte-identically.
+2. My first check used `find -maxdepth 3` and appeared to show **no `src/` directory**,
+   i.e. a broken package with unresolvable imports. Wrong — the depth was too shallow.
+   `src/` holds all five modules and the import resolves. A probe reported as a finding
+   again; same family as `t[:4]`, `[^a-zऀ-ۿ]`, and the `--json` status read.
+
+#### §3.1 minimal code — the shape is genuinely good, and one violation found
+
+4859 lines of code across 28 tracked files. No framework, no build step, no
+package.json. `bridge/server.py`, `browser.py`, `eras.py`, `selfcheck.py`,
+`import-jarvis-memory.py`, `whatsapp.py` are **stdlib-only, confirmed by AST scan**
+(the third-party imports that do appear — `google`, `websockets` — are the Gemini
+Live proxy and its checkers, which genuinely need them).
+
+**❌ Deleted: `load_env()` in `tools/whatsapp.py` — dead code, 9 lines.**
+Found by AST-walking every public function in the codebase and checking whether it is
+referenced *anywhere*, not just in its own file. It had **zero callers repo-wide**. The
+only other match for the string `load_env` in the entire tree is prose in this log
+referring to *Hermes's* function, not ours. It is residue from the abandoned direct-send
+approach. §3.1 names "redundant wrapper functions" as something to avoid.
+
+Verified after deletion rather than assumed: syntax OK, `whatsapp.py status` runs and
+reports the live paired chat, contact, call link and `9 delivered, 1 failed, 14 suppressed`.
+That was the **only** dead function in the whole codebase.
+
+#### §3.2 reuse before building — one real duplication found, deliberately kept
+
+`tools/browser.py` is **487 lines** driving Chrome/Brave over CDP. Hermes already ships
+exactly this: `tools/browser_tool_real_profile.py`, enabled by the
+`browser.use_real_profile` config key, described upstream as the *"Single shared
+real-profile copy-browser session"*.
+
+**That key is unset on all 9 profiles.** So a zero-code equivalent exists and is off.
+
+**Not deleted, and here is the reasoning rather than a shrug.** Three things in
+`browser.py` have no Hermes equivalent: **routing** between two browsers
+(youtube/instagram → Brave, everything else → Chrome), **per-host Chrome subprofile
+selection** (`linkedin.com`/`github.com` → Profile 1), and the **honesty check** that
+prints `NOT LOGGED IN` on a `/login` redirect. The CDP mechanics underneath — the four
+real bugs in masked frames, the 101 handshake, the id needle, brace-counting — are
+genuinely reimplemented. So this is *partial* duplication: ~100 lines of Helix-specific
+glue sitting on ~390 lines that Hermes could have provided.
+
+Flagged rather than rewritten: swapping the CDP layer onto Hermes's real-profile module
+is a real refactor of the one browser tool with a **verified logged-in YouTube and
+Instagram session**, for no capability gain. That is a change to ask about, not to make
+unasked.
+
+#### Duplication found and deliberately NOT fixed
+
+`read_key()` is duplicated between `tools/live_server.py` and `tools/live_tts.py`
+(11 lines, identical body). Extracting it means a third module plus import wiring
+**between two separate deployment boundaries** — one is a systemd service, one is
+imported by the bridge. Net complexity goes **up** to save 11 lines. Left alone.
+
+#### Candidate for deletion, flagged not taken
+
+`tools/check-aec.py` (146 lines) answers "does Chrome's AEC remove Helix's own voice".
+PROGRESS.md already settled that question, and settled it *adversely*: in headless
+Chrome AEC is inert (`echoCancellation=None`, 1% difference), and that finding does
+**not** transfer to a real browser. So it probes a settled, non-generalising question.
+Not removed unilaterally — it is the human's tool inventory.
+
+#### §3 verdict
+Both rules hold in substance. One real violation found and fixed (dead code), one real
+duplication found and honestly characterised rather than papered over, and §3.1's own
+named enforcement mechanism verified live instead of trusted.

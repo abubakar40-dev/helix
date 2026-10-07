@@ -3807,3 +3807,78 @@ with    --auto : EXT-READ-OK      (it really read /home/abubakargcx/.hermes/cron
 Both models now in `DISPATCH_MODELS` were verified individually before being put in the
 chain — `nemotron-3.5-lightning-free` (read, write, `--file`) and
 `nemotron-3-ultra-free`. Nothing was added to the chain on the strength of a name.
+
+---
+
+## 2026-10-07 — HELIX CALL proposed: stopped at the premise check
+
+Asked to build a self-hosted free no-SIM calling system (WebRTC + coturn + PWA + Web
+Push) on "the existing Oracle VPS already running the comm receptionist".
+
+### 🔴 The VPS does not exist, under any name or provider
+
+Not found in the log, and not found on the machine:
+
+| check | result |
+|---|---|
+| `docs/PROGRESS.md`, all 3,447 lines | **0** mentions of Oracle / VPS / receptionist / coturn |
+| whole `~/helix` repo (md, py, yaml, json) | **0** matches |
+| `~/.ssh/config` | **absent** — no host, no user, no key mapping |
+| `ssh`/`scp`/`rsync` in 67 KB of `~/.bash_history` | **zero** commands, ever |
+| cloud CLI configs `~/.oci`, `~/.aws`, `~/.config/gcloud`, `~/.azure`, `~/.do` | **none exist** |
+| cloud binaries `oci`, `aws`, `gcloud`, `doctl`, `flyctl`, `az`, `wrangler`, `tailscale` | **none installed** |
+| `known_hosts` | 2 entries, both hashed — unidentifiable, and not evidence of a VPS |
+
+So the instruction "don't spin up a new VM, use the existing Oracle VPS" refers to
+something with **no trace on this machine**. Nothing was installed. Asking for details
+rather than inventing a host.
+
+Worth recording: this is the second task in a row whose premise did not survive a check
+(the first was the dead model in point 1). **Check the premise before the first
+install.**
+
+### The architectural question the human asked, answered with measurements
+
+*"if we move it to vps, will the pc control agents die?"*
+
+**Yes — two of `pc`'s eight tools genuinely cannot move, and they are its core:**
+
+```
+pc tools: clarify, computer_use, file, memory, skills, terminal, todo, vision
+this box: DISPLAY=:0  WAYLAND_DISPLAY=wayland-0   22 devices in /dev/input/
+computer_use backend: cua
+```
+
+`computer_use` (mouse/keyboard/window control) and `vision` (screen reading) both
+require a real display and real input devices. A VPS has neither. They do not degrade
+there — they have nothing to act on.
+
+**And that is correct, not a loss.** Requirements §5.1 already mandates it: *"PC control,
+file management, folder navigation, terminal commands ... should run locally regardless
+of internet access."* The whole UI is localhost-bound on the laptop too:
+
+```
+127.0.0.1:4173  helix-globe
+127.0.0.1:8787  helix-bridge
+127.0.0.1:8788  helix-live
+```
+
+Moving any of those breaks the panel wiring and buys nothing for calling.
+
+### The decision that actually matters: calling does not need the laptop
+
+The TTS/STT path is already cloud-capable — `live-tts` (Gemini Live) and `edge-tts` are
+cloud, and the whole voice system is already proven working against Gemini. Only `piper`
+and `espeak` are local binaries with local models; whisper.cpp is local too.
+
+So a call can run **entirely** on: phone PWA → WebRTC → coturn + signaling (VPS) →
+Gemini. **The laptop is not in the audio path at all.**
+
+Therefore the minimal design is **not** "migrate Helix to the VPS". It is: put a small
+always-on *telephone* on the VPS — signaling, TURN, and the existing Gemini TTS/STT —
+and leave HELIX on the laptop as CEO, able to tell it to ring you via one HTTP call.
+
+That keeps §5.1 intact, keeps §6.1 intact (CEO delegates, stays authoritative), needs no
+agent migration, and reuses the TTS chain unchanged instead of reimplementing it.
+
+**Status: blocked at Phase A step 1** pending the VPS host/user/auth. Nothing built.

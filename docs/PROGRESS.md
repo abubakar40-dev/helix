@@ -3775,3 +3775,35 @@ SELFTEST: PASS
 This is the recurring failure class in this project wearing a new hat: **a stale
 historical fact reported as current state**. It is why the counters in the voice work had
 to be made loud.
+
+#### ⚠ Gap found while fixing the above, deliberately NOT built
+
+`selfcheck.py` appends to `docs/bugs/UNSENT.md` on dispatch failure but **never reads it
+back and never clears it**. So a report queued there is never retried — the promise
+"never silently dropped" is only half true: it is loudly dropped, once, and then never
+mentioned again.
+
+Not built, because nothing has actually been lost: the only entry is residue from my own
+test run of the pre-fix chain, and its subject (the stale cron failure) is resolved.
+A retry loop is speculative until a real report is dropped. When it is needed, the lazy
+version is: on a successful dispatch, re-append the current report and note the backlog
+as resolved — no scheduler, no state.
+
+Also noted: that single entry is **pre-fix residue** and is left in place rather than
+deleted, because `UNSENT.md` is an append-only log and rewriting it would be the exact
+"stale fact vs current state" dishonesty this entry is about. Its timestamp says when it
+happened.
+
+#### `--auto` fix proven in both directions
+
+The full dispatch task runs long (real work), so the flag was verified directly instead —
+same external-directory touch, with and without:
+
+```
+without --auto : Error: declined this tool call
+with    --auto : EXT-READ-OK      (it really read /home/abubakargcx/.hermes/cron/jobs.json)
+```
+
+Both models now in `DISPATCH_MODELS` were verified individually before being put in the
+chain — `nemotron-3.5-lightning-free` (read, write, `--file`) and
+`nemotron-3-ultra-free`. Nothing was added to the chain on the strength of a name.

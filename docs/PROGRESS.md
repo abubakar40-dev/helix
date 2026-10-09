@@ -3960,3 +3960,91 @@ agent migration, and reuses the TTS chain unchanged instead of reimplementing it
 **No code changes were applied** — these are kernel-level hardware events with no Helix code root cause. The self-diagnosis mechanism functioned as intended, correctly detecting and reporting real findings. The existing guard regex in `check_kernel()` already filters i915 errors correctly via the `\bERROR\b` pattern.
 
 **Nothing was re-enabled, reconfigured, or removed** belonging to the human. The i915 and USB kernel events are historical log entries; they do not represent broken code requiring remediation.
+
+---
+
+## 2026-10-10 — UI Phase 1: single-window "console" shell (orb + globe + live data)
+
+The VPS is queued (Oracle is refusing to provision — *"too many requests"*), so this is
+the work done in the meantime: a new high-graphics single-window UI matching the
+reference screenshots, at `http://127.0.0.1:8787/console/`.
+
+### Two things deliberately NOT done, both because the project's own spec says so
+
+**1. Did not add "every framework".** The request was to use *"all frameworks of three.js
+or any language that has been developed till now"*. Requirements §3.1 ("smallest
+practical amount of code"), §26.12 ("no feature bloat") and §29 point the other way, and
+this box's WebGL budget is already documented at roughly a gigabyte for two stacked
+scenes. So the graphics budget is spent where it shows: a real Three.js orb and the real
+Cesium globe, both already installed. Adding a framework stack to compose two iframes and
+one canvas would be bloat that risks the RAM ceiling, not capability.
+
+**2. Did not copy the reference's branding.** Requirements §16: *"build an original
+implementation; do not copy its name, logo, or branding."* The screenshots are titled
+**"Stonic AI"** in the title bar. The shell is branded **HELIX**. Layout, density and
+visual language are followed; the name and logo are not.
+
+### Reused, per §16.2 / §16.3 — not rebuilt
+
+- **The orb**: `ui/console/orbScene.js` is a **byte-identical copy** of
+  `ui/voice-core/orbScene.js`, verified by `md5sum` (`5c9fcce5…` both) and `diff -q`.
+  `git status ui/voice-core/` is **empty** — the standing "do not change the orb" rule
+  holds, and it has now held across four separate sessions.
+- **The globe**: `gods-eye-view` is framed at 127.0.0.1:4173, exactly as the existing
+  World Monitor does, including its `build/vite.js` framing patch.
+
+### What was built
+
+`ui/console/index.html`, ~430 lines, no framework, no build step, one added bridge route
+(`/console/`). Four regions: Voice Core (top), Sat-Link + headlines (left), Agent Town
+(centre), Console (right), plus a status bar. Every value is live from the bridge —
+`/cortex` for the node counts, `/state` for real kanban status, `/events` (SSE) for the
+console stream, `/headlines` for the feed.
+
+### Verified in a real browser, not asserted
+
+| check | result |
+|---|---|
+| orb WebGL canvas | **284x170**, live |
+| node counts | `MEMORY=2 SKILLS=14 SOUL=9 SETTING=9` — real `/cortex` |
+| node connector paths | **4** drawn |
+| Agent Town desks | **9**, named helix/research/pc/dev/vision/comm/sysmon/career/document |
+| headlines | **16** rendered of **46**, real `bbc.co.uk` link, correct source |
+| console stream | **8** live SSE events |
+| status bar | online, 9 agents, 0 busy, 4 seats |
+| console errors / warnings | **0 / 0** |
+| failed network requests | **0** |
+| globe inside the frame | **195** requests incl. real `arcgisonline …/tile/23/0/0` + reearth terrain |
+| 2D/3D toggle | src → `&pitch=-90&heading=0&map=esri-imagery`, `aria-selected` swaps |
+| layout overflow | **none** — every panel inside the viewport |
+| LAN `192.168.100.97:8787` | **000** refused — still localhost-only |
+
+### ❌ Three real bugs found by measuring rather than by looking
+
+**1. Headlines rendered 0 against a 200.** `/headlines` returns
+`{ts, feeds:[{source, error, items:[…]}], total}` — items are **nested per feed**. My
+first parser looked for a top-level `d.items` and found nothing. A 200 response rendering
+empty is exactly the silent failure this project keeps getting caught by.
+
+**2. The globe was collapsed to `h: 0`.** Measured `globeFrame h=0` — the headlines panel
+was eating the entire left rail. A visually "loaded" panel with zero height looks fine in
+a DOM dump and shows nothing on screen.
+
+**3. Editing my own CSS three times left three `#headlines` rules and two `#globe` rules
+behind**, so the last one silently won. Found by grepping for duplicate selectors, not by
+reading. Then removing the duplicates deleted *both* `#globe` rules, so the iframe lost
+its sizing entirely — caught by re-grepping rather than assuming the edit was clean.
+
+And the actual cause of the overflow was structural: `#headlines` was **not a direct flex
+child** — it sits inside `<section style="flex:0 0 auto">`, which cannot shrink. Fixed by
+giving that section `id="hlPanel"` with real flex properties.
+
+### Honest gaps — stated in the UI itself, not hidden
+
+`visual hub`, `gesture`, the AGENT/NOTES console tabs and the CHAT button render an
+explicit *"not built yet — honest, not faked"* message instead of a mock that looks
+live. Agent Town currently draws **live status cards, not the walking pixel-art avatars**
+in the reference — that is the next phase, and it is the single biggest remaining piece.
+**No visual screenshot**: the harness reports *"needs a visible tab"* and this
+environment has no visible desktop window, so the evidence above is DOM/geometry/network
+level, which is a weaker form of proof than a picture. Flagged rather than glossed.

@@ -974,6 +974,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # Without an explicit Cache-Control the browser heuristically caches, and
+        # a CSS/JS edit then appears not to have taken effect. That cost several
+        # rounds of measuring a "layout that would not change". Always revalidate.
+        self.send_header("Cache-Control", "no-cache, must-revalidate")
         self.end_headers()
         self.wfile.write(body)
 

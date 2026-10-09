@@ -4388,3 +4388,103 @@ previously overflowing.
   *verified working* (live satellite TLEs, 27 launches); replacing verified data with an
   unknown repo is more likely to hurt than help. The right move is to find out what
   "isn't working as expected" actually is first. Say the word and I will swap it anyway.
+
+---
+
+## 2026-10-10 — Phase 6: layout matched to the reference spec (1509x812)
+
+Layout work driven by measured reference coordinates rather than eyeballing. Verified
+with `tools/measure-layout.py`, a CDP harness that drives headless Brave at an exact
+1509x812 viewport and prints target-vs-actual deltas for every panel.
+
+### Files modified
+- `ui/console/index.html` — grid, panel geometry, insets, status bar placement
+- `ui/console/town.js` — 60fps delta-time movement, brighter palette, furniture, cover-fit
+- `bridge/server.py` — `Cache-Control: no-cache` on served assets
+- `tools/measure-layout.py`, `tools/probe-town.py` — new measurement harnesses
+
+### Root cause of the original mismatch
+Three separate causes, not one:
+
+1. **Columns were wrong proportions.** 22.4 / 51.5 / 25.4 % instead of 20.7 / 44.7 / 31.0 %.
+2. **`fr` cannot express the reference exactly.** The reference has *asymmetric* margins
+   — 12px left, 10px right — so `12+316+12+643+12+504+10 = 1509` and the three tracks sum
+   to exactly the post-gap width (1463). With symmetric 12px padding the post-gap space is
+   1461 and `fr` rounds the right column to 503 instead of 504. Percentages are worse: they
+   resolve against the *content* box (1485), not the post-gap width, and overflow by the
+   gap. Fixed by matching the reference's asymmetric padding.
+3. **A full-width status bar the reference does not have.** Mine sat outside the grid and
+   stole ~30px of workspace height. The reference puts those indicators *inside* the
+   Agent Town panel's bottom row; moved there.
+
+### Verification at the exact reference viewport
+
+| element | reference | actual | delta |
+|---|---|---|---|
+| title bar | 0,0,1509,35 | 0,0,1509,35 | **exact** |
+| left column | 12,47,316,752 | 12,47,316,753 | +1 |
+| centre / Agent Town | 340,366,643,433 | 340,366,643,434 | +1 |
+| right column | 995,47,504,752 | 995,47,504,753 | +1 |
+| Media Link | 28,62,284,137 | 28,62,284,138 | +1 |
+| Sat-Link Feed | 28,211,284,427 | 28,213,284,426 | +2 |
+| Headlines | 28,652,284,134 | 28,652,284,135 | +1 |
+| **node cards** | 358,88,142,219 | 358,88,142,219 | **exact** |
+| **orb panel** | 653,54,299,286 | 653,54,299,286 | **exact** |
+| composer | 1010,738,474,47 | 1011,738,472,47 | +1 / −2 |
+| console header | 995,47,504,47 | 996,48,502,47 | +1 / −2 |
+
+**Worst delta 2px. Overflow: none.** Screenshot: `/tmp/helix-verify.png`.
+
+### 🔴 Agent Town was invisible the entire time — and the DOM said it was fine
+
+This is the most important finding in the pass. The town *canvas* measured
+**mean luma 110, 91% bright pixels** — bright and correctly painted. The **screenshot**
+of the same region measured **mean luma 16.6, 0% bright** — the panel background.
+
+`document.elementFromPoint()` at the canvas centre returned **`townNote`**: the
+"not built yet" placeholder overlay was sitting on top of the canvas, fully opaque.
+
+Cause is the same trap as `#camOff`: an author `display:grid` rule **beats the UA
+stylesheet's `[hidden]{display:none}`**, so the `hidden` attribute did nothing. I had
+already fixed this once for the camera overlay and missed it here.
+
+After adding `#townNote[hidden]{display:none}`, measured on the **screenshot**:
+
+```
+town region mean luma   16.6  ->  103.2
+town region bright>90    0.0% ->   83.2%
+```
+
+Every previous "the town is too dark" judgement was measuring my own overlay.
+
+### Smooth movement
+Was a **fixed 0.55px step repainted at ~11fps** (`if (ts-last < 90) return`), so an agent
+crossing the office advanced in visible jumps. Now a **60fps rAF with delta-time motion**:
+speed is 46 virtual px/**second** scaled by real elapsed time, clamped to 0.1s so a stalled
+tab cannot teleport, and the leg cycle advances with **distance travelled** rather than
+frame parity, so the walk matches the ground covered.
+
+### Graphics
+- Palette raised (floor `#26303c` → `#5a6c80`), wall gradient, ceiling light pools,
+  plank seams, monitor glow spill.
+- Furniture added: meeting table + chairs, partition walls, filing cabinets, shelf,
+  notice board, wall clock, sofa, floor detail. Distinct colours 1528 → 1810.
+- **Cover-fit instead of contain-fit.** Contain left **41781 black pixels (~10%)** as
+  letterbox bars because the room's 336x210 aspect is wider than the panel. Covering
+  crops decorative wall instead: mean luma 84 → **110**, bright pixels 66% → **91.4%**,
+  and `0,0,0` is gone from the dominant colours entirely.
+
+### Also fixed: a bridge bug that caused real confusion
+`_send_file` sent **no `Cache-Control`**, so browsers heuristically cached the UI. A CSS
+edit would appear not to have taken effect — which cost several rounds of measuring a
+"layout that would not change". Assets now send `no-cache, must-revalidate`.
+
+### Two harness bugs worth recording
+1. **WebSocket frames were never parsed.** A raw `recv()` returns `b"\x81J{...}"` and
+   `json.loads()` on that always raises, so every response was discarded and the loop
+   reported a bogus timeout. This looked exactly like a hung renderer. Fixed with proper
+   frame-header parsing; `Emulation.setDeviceMetricsOverride` then worked, which is what
+   makes the exact 1509x812 viewport possible at all.
+2. **Snap Brave runs a single instance** and reuses the first debug port, so "launch a
+   fresh browser" silently kept serving the old page. Fixed by navigating the live target
+   with `Network.setCacheDisabled` instead.

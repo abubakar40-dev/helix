@@ -26,9 +26,11 @@ body{
   -webkit-font-smoothing:antialiased;
 }
 /* ── title bar ─────────────────────────────────────────── */
+/* 35px exactly: the reference title bar is 0,0 1509x35 and must not eat
+   workspace height. */
 #top{
-  height:38px;flex:0 0 38px;display:flex;align-items:center;gap:12px;
-  padding:0 12px;border-bottom:1px solid var(--line);background:#070c12;
+  height:35px;flex:0 0 35px;display:flex;align-items:center;gap:12px;
+  padding:0 14px;border-bottom:1px solid var(--line);background:#070c12;
 }
 #brand{font-weight:700;letter-spacing:.14em;color:var(--hi)}
 #brand b{color:var(--cy)}
@@ -43,14 +45,22 @@ body{
    Mine were 22.4 / 51.5 / 25.4, so the chat column was 5.6 points too narrow
    and the centre 6.8 points too wide. fr units (not %) so the 8px gaps are
    absorbed proportionally instead of eating into the last column. */
+/* Reference 1509x812: left 12,47 316x752 | centre 340,47 643x752 | right 995,47 504x752
+   => 12px outer margin, 12px gaps, tracks 316 / 643 / 504. The left rail spans
+   BOTH rows; the centre is an upper composition + Agent Town (307 / 433 with a
+   12px gap = 752). Rows use fr so the split survives other viewport heights. */
 main{
-  flex:1;min-height:0;display:grid;gap:8px;padding:12px 20px;
-  grid-template-columns:minmax(250px,20.7fr) minmax(0,44.7fr) minmax(330px,31fr);
-  /* voice core 273/733 = 37%, agent town 430/733 = 59% of the centre column */
-  grid-template-rows:36% minmax(0,1fr);
-  grid-template-areas:"core core console" "left town console";
+  flex:1;min-height:0;display:grid;gap:12px;padding:12px 10px 12px 12px;
+  /* fr, not percentages: percentages resolve against the CONTENT box (1485px),
+     not against the post-gap width, so they overflow by the gap width. fr
+     divides the true post-gap space and lands the left column on 316 exactly,
+     with centre/right within 1px. */
+  grid-template-columns:minmax(0,316fr) minmax(0,643fr) minmax(0,504fr);
+  grid-template-rows:minmax(0,41.43fr) minmax(0,58.57fr);
+  grid-template-areas:"left top console" "left town console";
 }
-#core{grid-area:core} #left{grid-area:left}
+#left,#top,#town,#console{min-width:0;min-height:0}
+#left{grid-area:left} #top{grid-area:top}
 #town{grid-area:town} #console{grid-area:console}
 
 .panel{
@@ -64,12 +74,20 @@ main{
   padding:7px 10px;border-bottom:1px solid var(--line);
   font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
 }
+/* Reference console header is 47px tall (995,47 504x47). */
+#console .ph{height:47px;flex:0 0 47px}
 .ph .tag{color:var(--cy)}
 .pb{flex:1;min-height:0;position:relative}
 
-/* ── voice core ────────────────────────────────────────── */
-#core .pb{display:flex;align-items:center;gap:18px;padding:10px 16px}
-#nodes{display:flex;flex-direction:column;gap:9px;width:210px;flex:0 0 auto}
+/* ── upper centre ─────────────────────────────────────
+   Reference: nodes at x=358 (18px into the 643 column) y=88 (41px down), 142 wide,
+   cards 39 tall with 21px gaps. Orb panel x=653 (313 across), y=54 (7 down),
+   299x286, leaving 31px clear on the right. Asymmetric on purpose - the orb is
+   NOT centred, and the node cards must not stretch across the column. */
+#top{position:relative;display:flex;align-items:flex-start;
+  justify-content:space-between;padding:7px 31px 0 18px}
+#nodes{display:flex;flex-direction:column;gap:21px;width:142px;flex:0 0 142px;margin-top:34px}
+#nodes .node{height:39px;box-sizing:border-box}
 .node{
   display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;
   background:#0c141c;border:1px solid var(--nc,var(--line));
@@ -81,11 +99,12 @@ main{
 .node .ct{font-variant-numeric:tabular-nums;color:var(--nc);font-weight:700;font-size:13px}
 .node .pip{position:absolute;right:-3px;top:50%;width:6px;height:6px;margin-top:-3px;
   border-radius:50%;background:var(--nc);box-shadow:0 0 8px var(--nc)}
-#links{position:absolute;inset:0;pointer-events:none}
+#links{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
 #orbwrap{
-  flex:1;min-width:0;height:172px;border-radius:var(--r);position:relative;overflow:hidden;
+  width:299px;height:286px;flex:0 0 299px;border-radius:var(--r);position:relative;
+  overflow:hidden;border:1px solid var(--line);
   background:radial-gradient(120% 120% at 50% 40%,#121b26 0%,#070c12 70%);
-  border:1px solid var(--line);
+  box-shadow:0 8px 30px #0009, 0 1px 0 #ffffff08 inset;
 }
 #orb{position:absolute;inset:0}
 #orbstate{
@@ -105,13 +124,16 @@ main{
 #startbtn.stop{border-color:var(--rd);color:var(--rd);box-shadow:0 0 18px -6px var(--rd)}
 
 /* ── left rail ─────────────────────────────────────────── */
-#left{display:flex;flex-direction:column;gap:8px;min-height:0}
+/* Reference: rail is 12,47 316x752 but the panels inside are 28,62 284x137 -
+   i.e. inset 16px each side, 15px top, 13px bottom. The rail is NOT flush. */
+#left{display:flex;flex-direction:column;gap:13px;min-height:0;
+  padding:15px 16px 13px}
 /* The globe is the flexible one: on a normal laptop window the left rail is
    ~640px and this gets ~380px, which is where its own HUD becomes readable.
    The mins are set so a SHORT window degrades instead of overflowing - three
    stacked panels need ~340px and the harness viewport is only 554px tall. */
-#globePanel{flex:1 1 auto;min-height:150px}
-#hlPanel{flex:0 0 23%;min-height:64px;max-height:none}
+#globePanel{flex:427 1 0;min-height:150px}
+#hlPanel{flex:134 1 0;min-height:64px;max-height:none}
 
 /* Enough vertical room: give the globe real space instead of a cramped strip. */
 @media (min-height:820px){
@@ -143,7 +165,10 @@ main{
 /* Reference rail split, measured: camera 136/733 = 17%, globe 415/733 = 57%,
    headlines 165/733 = 23%. The globe was getting 11% of the rail, which is why
    its own HUD was unreadable - it was never given room. */
-#camPanel{flex:0 0 17%;min-height:76px}
+/* Reference rail heights 137 / 427 / 134 within a 752 rail (gaps eat 26px).
+   flex-grow in the same ratio keeps those proportions at any viewport height,
+   which percentages could not do once a min-height started binding. */
+#camPanel{flex:137 1 0;min-height:76px}
 #camPanel .pb{flex:1 1 auto;min-height:0;background:#05080c}
 #camFeed{width:100%;height:100%;object-fit:cover;display:block;image-rendering:auto}
 #camOff,#camErr{position:absolute;inset:0;display:grid;place-content:center;
@@ -175,13 +200,20 @@ main{
   width:auto;height:auto}
 #townNote{position:absolute;inset:0;display:grid;place-content:center;gap:6px;
   text-align:center;color:var(--dim);background:#080d13f2;padding:20px}
+/* An author `display` rule beats the UA stylesheet's [hidden]{display:none}, so
+   this overlay stayed painted ON TOP of the live town canvas even while hidden -
+   which is why Agent Town measured mean luma 110 in the canvas but rendered at
+   16.6 on screen: we were looking at the overlay's background, not the office.
+   Same trap as #camOff, fixed here too. */
+#townNote[hidden]{display:none}
 #townNote b{color:var(--hi);font-size:12px;letter-spacing:.1em}
 #townNote span{font-size:10px}
 
 /* ── console (right): chat ─────────────────────────────────── */
 #convo{display:flex;flex-direction:column}
 #stream{flex:1 1 auto;min-height:0}
-.msg{margin-bottom:9px;max-width:92%}
+/* Reference console cards sit at x=1027 in a 504 column: 32px inset, 459 wide. */
+.msg{margin:0 22px 12px;max-width:calc(100% - 45px)}
 .msg .who{font-size:9px;letter-spacing:.14em;margin-bottom:3px}
 .msg .bub{padding:7px 9px;border-radius:8px;white-space:pre-wrap;word-break:break-word;
   font:11px/1.5 inherit}
@@ -193,8 +225,11 @@ main{
 .msg.sys .bub{background:#0d141c;border:1px solid var(--line);color:var(--dim);font-size:10px}
 .msg .att{margin-top:5px;font-size:10px;color:var(--am);
   border-top:1px solid #3a2f16;padding-top:4px}
-#composer{flex:0 0 auto;border-top:1px solid var(--line);padding:7px 8px;background:#080d13}
-#chips{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px}
+/* Reference input row: x=1010 w=474 h=47, pinned to the bottom of the panel. */
+/* Reference input row 1010,738 474x47 with 14px of panel below it. */
+#composer{flex:0 0 47px;display:flex;align-items:center;gap:10px;
+  margin:0 15px 14px;border-top:1px solid var(--line);background:#080d13}
+#chips{display:flex;gap:5px;flex-wrap:wrap;flex:0 0 auto;max-width:40%}
 #chips:empty{display:none}
 .chip{font-size:10px;padding:3px 8px;border-radius:99px;background:#13202c;
   border:1px solid var(--cy);color:var(--cy);display:flex;gap:6px;align-items:center}
@@ -234,15 +269,13 @@ main{
 
 /* ── status bar ────────────────────────────────────────── */
 #status{
-  flex:0 0 26px;display:flex;align-items:center;gap:16px;padding:0 12px;
+  flex:0 0 30px;display:flex;align-items:center;gap:16px;padding:0 12px;
   border-top:1px solid var(--line);background:#070c12;color:var(--dim);font-size:10.5px
 }
 #status b{color:var(--ink);font-weight:600}
 .meter{width:88px;height:5px;border-radius:99px;background:#131c26;overflow:hidden}
 .meter i{display:block;height:100%;background:linear-gradient(90deg,var(--cy),var(--gr))}
-#chat{
-  position:absolute;right:10px;bottom:10px;display:flex;gap:6px;z-index:4
-}
+#chat{position:absolute;right:10px;bottom:40px;display:flex;gap:6px;z-index:4}
 #chat button{
   padding:5px 12px;border-radius:6px;cursor:pointer;font-size:10px;letter-spacing:.14em;
   background:#0b141ccc;border:1px solid var(--line);color:var(--ink);backdrop-filter:blur(6px)
@@ -263,10 +296,8 @@ main{
 </div>
 
 <main>
-  <!-- VOICE CORE -->
-  <section class="panel" id="core">
-    <div class="ph"><span class="tag">◉</span> Voice Core <span id="coreState" style="margin-left:auto;text-transform:none;letter-spacing:0"></span></div>
-    <div class="pb">
+  <!-- UPPER CENTRE: nodes (left) and orb (right) as separate panels -->
+  <div id="top">
       <svg id="links"></svg>
       <div id="nodes">
         <div class="node" data-k="memory" style="--nc:var(--cy)"><span class="ic">◉</span><span class="lb">MEMORY</span><span class="ct" id="c-memory">–</span><span class="pip"></span></div>
@@ -276,11 +307,11 @@ main{
       </div>
       <div id="orbwrap">
         <div id="orb"></div>
-        <div id="orbstate"><span class="dot" id="orbDot"></span><span id="orbTxt">IDLE</span></div>
+        <div id="orbstate"><span class="dot" id="orbDot"></span><span id="orbTxt">IDLE</span>
+          <span id="coreState"></span></div>
         <button id="startbtn">START HELIX</button>
       </div>
-    </div>
-  </section>
+  </div>
 
   <!-- LEFT RAIL -->
   <div id="left">
@@ -331,6 +362,13 @@ main{
       <div id="chat">
         <button id="chatBtn">CHAT</button>
       </div>
+      <div id="status">
+        <span><span class="dot" id="sDot"></span> <b id="sOnline">offline</b></span>
+        <span>model <b id="sModel">—</b></span>
+        <span>CTX <span class="meter"><i id="sCtx" style="width:0%"></i></span> <b id="sCtxN">0</b></span>
+        <span><b id="sBusy">0</b>/<b id="sSeats">0</b> busy</span>
+        <span style="margin-left:auto" id="sAgents">–</span>
+      </div>
     </div>
   </section>
 
@@ -362,13 +400,7 @@ main{
   </section>
 </main>
 
-<div id="status">
-  <span><span class="dot" id="sDot"></span> <b id="sOnline">offline</b></span>
-  <span>model <b id="sModel">—</b></span>
-  <span>CTX <span class="meter"><i id="sCtx" style="width:0%"></i></span> <b id="sCtxN">0</b></span>
-  <span><b id="sBusy">0</b>/<b id="sSeats">0</b> busy</span>
-  <span style="margin-left:auto" id="sAgents">–</span>
-</div>
+
 
 <script type="module">
 import { createOrbScene } from "./orbScene.js";
@@ -391,15 +423,25 @@ catch(e){ log("orb failed: "+e.message,"bad"); $("#orb").innerHTML =
 
 /* node links, redrawn on resize like voice-core does */
 const NODES = ["memory","skills","soul","settings"];
+/* Positions are taken with getBoundingClientRect and rebased onto #top, NOT with
+   offsetLeft/offsetTop. #top is now the positioned ancestor for the SVG, but the
+   nodes and the orb sit inside nested flex boxes, so offsetLeft was measured
+   from the wrong element and the connectors drew as two stubs floating to the
+   right of the orb. */
 function drawLinks(){
-  const w = $("#links").clientWidth, h = $("#links").clientHeight;
-  const svg = $("#links"); svg.setAttribute("viewBox",`0 0 ${w} ${h}`);
-  const cx = $("#orbwrap").offsetLeft + $("#orbwrap").offsetWidth/2;
-  const cy = $("#orbwrap").offsetTop + $("#orbwrap").offsetHeight/2;
+  const host = $("#top"), svg = $("#links");
+  const hb = host.getBoundingClientRect();
+  const w = Math.round(hb.width), h = Math.round(hb.height);
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  const ob = $("#orbwrap").getBoundingClientRect();
+  const cx = Math.round(ob.left - hb.left + ob.width/2);
+  const cy = Math.round(ob.top - hb.top + ob.height/2);
   const COL = {memory:"#22d3ee",skills:"#f59e0b",soul:"#22c55e",settings:"#7d8b99"};
   svg.innerHTML = NODES.map(k=>{
     const n = document.querySelector(`.node[data-k=${k}]`);
-    const x = n.offsetLeft + n.offsetWidth + 3, y = n.offsetTop + n.offsetHeight/2;
+    const nb = n.getBoundingClientRect();
+    const x = Math.round(nb.right - hb.left + 3);
+    const y = Math.round(nb.top - hb.top + nb.height/2);
     const mx = x + (cx-x)*0.55;
     return `<path d="M${x},${y} L${mx},${y} L${cx},${cy}" fill="none"
       stroke="${COL[k]}" stroke-width="1.5" opacity=".75"/>

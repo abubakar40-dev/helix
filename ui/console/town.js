@@ -8,11 +8,12 @@
 // the palette sat around #26303c on a #05080d page, and at the panel's real size
 // the town read as an empty black box. A screenshot showed it; the DOM never did.
 const PAL = {
-  floorA:"#4a5a6b", floorB:"#44546a", wood:"#7a6248", rug:"#33465a",
-  wall:"#243140", wallTop:"#31435a", desk:"#5d6f85", deskTop:"#6f8399",
-  screen:"#9fe3ff", screenDim:"#2f5a78", chair:"#47576b",
-  plant:"#3fa968", pot:"#8a6a4a", cooler:"#5fb3c9",
-  paper:"#e8f2fb", frame:"#5a6b7d"
+  floorA:"#5a6c80", floorB:"#53657a", wood:"#8a7052", rug:"#3d5268",
+  wall:"#2c3c4e", wallTop:"#3b5068", desk:"#6c8098", deskTop:"#8098b0",
+  screen:"#bdeeff", screenDim:"#3a6c90", chair:"#54677d",
+  plant:"#4cbd7c", pot:"#9a7a56", cooler:"#6fc7dd",
+  paper:"#f2f8ff", frame:"#6a7d90",
+  glow:"#9fe3ff", lamp:"#ffd9a0"
 };
 
 // 9 agents, 9 distinct shirts. Helix (CEO) gets the brightest.
@@ -59,7 +60,11 @@ export function createTown(canvas, onStatus){
     canvas.style.width = w + "px";
     canvas.style.height = h + "px";
     canvas.width = w; canvas.height = h;
-    fit = Math.min(w / VW, h / VH);
+    // COVER, not contain. Contain left 41781 black pixels (~10% of the canvas)
+    // as letterbox bars at 641x317, because the room's 336x210 aspect is wider
+    // than the panel. Covering crops a little of the outer wall instead, which
+    // is decorative, so the office fills its panel with no dead bars.
+    fit = Math.max(w / VW, h / VH);
     ctx.imageSmoothingEnabled = false;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.translate((w - VW * fit) / 2, (h - VH * fit) / 2);
@@ -78,21 +83,34 @@ export function createTown(canvas, onStatus){
     ctx.fillStyle="#0006"; ctx.fillRect(x|0,(y+h-1)|0,w|0,1|0); };
 
   function drawRoom(){
-    R(0,0,VW,VH,PAL.wall);
-    R(0,0,VW,16,PAL.wallTop);
+    // wall with a vertical gradient, so the room has depth instead of being a
+    // flat block of one colour
+    for (let y = 0; y < 22; y++) {
+      R(0, y, VW, 1, y < 3 ? PAL.wallTop : PAL.wall);
+    }
     // carpet field
-    for(let y=16;y<VH;y+=4) for(let x=0;x<VW;x+=4) R(x,y,4,4,(x+y)%8?PAL.floorA:PAL.floorB);
-    // wooden corridor through the middle
+    for(let y=22;y<VH;y+=4) for(let x=0;x<VW;x+=4)
+      R(x,y,4,4,(x+y)%8?PAL.floorA:PAL.floorB);
+    // wooden corridor through the middle, with plank seams and a lit edge
     R(0,96,VW,26,PAL.wood);
     for(let x=0;x<VW;x+=8) R(x,96,1,26,"#00000022");
-    R(0,120,VW,2,"#00000033");
-    // wall trim + a couple of framed pictures
-    R(0,16,VW,1,"#0d141b");
-    [[60,20],[150,20]].forEach(([fx,fy])=>{
-      box(fx,fy,14,11,PAL.frame); R(fx+2,fy+2,10,7,PAL.paper);
+    R(0,96,VW,1,"#c9a06a55"); R(0,120,VW,2,"#00000033");
+    // wall trim + framed pictures
+    R(0,20,VW,2,"#1b2733");
+    [[58,4],[150,4],[250,4]].forEach(([fx,fy])=>{
+      box(fx,fy,15,12,PAL.frame); R(fx+2,fy+2,11,8,PAL.paper);
+      R(fx+3,fy+3,9,1,"#9fb3c8");
     });
-    // rug in the middle
-    R(120,150,90,40,PAL.rug); R(124,154,82,32,"#22303d");
+    // ceiling light pools over the desk rows - cheap depth cue
+    [60,158,258].forEach(cx=>{
+      for(let r=13;r>0;r--) {
+        ctx.fillStyle = "rgba(255,217,160," + (0.030 - r*0.0016).toFixed(4) + ")";
+        ctx.fillRect(cx-r, 20-r*0.5, r*2, r);
+      }
+    });
+    // rug
+    R(120,150,90,40,PAL.rug); R(124,154,82,32,"#46596e");
+    for(let x=126;x<204;x+=6) R(x,156,3,32,"#00000018");
   }
 
   function drawDesk(d,i){
@@ -101,7 +119,9 @@ export function createTown(canvas, onStatus){
     // monitor
     R(d.x-5,d.y-6,10,7,PAL.screenDim);
     R(d.x-4,d.y-5,8,5,PAL.screen);
-    R(d.x-2,d.y-4,4,1,"#ffffff88");
+    R(d.x-2,d.y-4,4,1,"#ffffffcc");
+    ctx.fillStyle = "rgba(159,227,255,0.16)";
+    ctx.fillRect(d.x-9, d.y-3, 18, 7);        // glow spill on the desk surface
     // keyboard + paper
     R(d.x-6,d.y+1,12,2,"#2b3644"); R(d.x+8,d.y-2,4,5,PAL.paper);
     // desk number plate
@@ -115,11 +135,43 @@ export function createTown(canvas, onStatus){
   function cooler(x,y){ R(x,y+4,7,10,PAL.cooler); R(x+1,y,5,4,"#dbeafe"); }
 
   function drawDecor(){
-    plant(6,168); plant(320,168); cooler(292,166);
-    plant(6,70);
-    // meeting table, top-right
-    R(268,66,44,18,"#3a4756"); R(268,66,44,2,"#465566");
-    R(272,62,4,4,"#2f3a47"); R(304,62,4,4,"#2f3a47");
+    // The reference office is densely furnished; the room was sparse, which read
+    // as unfinished rather than minimal. Fill it with real furniture.
+    plant(6,168); plant(320,168); cooler(292,166); plant(6,70);
+
+    // meeting table + chairs, top right
+    R(268,66,44,18,"#6c8098"); R(268,66,44,2,"#8098b0");
+    R(274,70,10,6,"#bdeeff"); R(292,70,8,5,"#3a6c90");
+    [272,282,304,314].forEach(cx=>{ R(cx,62,4,4,"#54677d"); R(cx,84,4,4,"#54677d"); });
+
+    // low partition walls dividing the floor into zones
+    const part=(x,y,w,h)=>{ R(x,y,w,2,"#8098b0"); R(x,y+h-2,w,2,"#3d5268");
+                             R(x,y,2,h,"#6c8098"); R(x+w-2,y,2,h,"#46586e"); };
+    part(20,86,120,2); part(190,86,60,2); part(20,128,120,2); part(190,128,70,2);
+    part(146,150,2,54); part(238,150,2,54);
+
+    // filing cabinets + shelf along the left wall
+    for (let i=0;i<3;i++){ R(4,34+i*11,12,10,"#6c8098"); R(5,36+i*11,4,2,"#2c3c4e"); }
+    R(4,80,12,26,"#54677d"); R(5,82,10,1,"#8098b0");
+
+    // notice board + wall clock, top wall
+    R(196,4,26,14,"#54677d"); R(198,6,9,5,"#f2f8ff"); R(209,6,11,4,"#bdeeff");
+    R(209,11,8,5,"#9fe3ff");
+    ctx.fillStyle = PAL.paper;
+    ctx.beginPath(); ctx.arc(300,10,5,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#2c3c4e";
+    ctx.fillRect(299,4,1,3); ctx.fillRect(300,10,3,1);
+
+    // sofa + rug in the lounge
+    R(286,186,42,14,"#4a6076"); R(288,182,38,5,"#5c7690");
+    R(288,184,8,3,"#6c8098"); R(312,184,8,3,"#6c8098");
+    R(258,192,26,16,"#3d5268");
+
+    // scattered floor detail so large areas are not flat
+    for (let i=0;i<7;i++){
+      const x=24+((i*53)%290), y=134+((i*17)%60);
+      R(x,y,2,2,"#46586e");
+    }
   }
 
   // ── the sprite: 8 wide x 14 tall pixel person ──────────────────────────────
@@ -137,15 +189,15 @@ export function createTown(canvas, onStatus){
       R(x+2,y+8,4,4,shirt);            // torso
       R(x+2,y+11,4,2,"#2b3644");       // legs tucked under desk
       R(x+1,y+8,1,3,skin); R(x+6,y+8,1,3,skin); // arms forward (typing)
-      // typing hands move on alternate frames
-      if (frame%2){ R(x,y+7,3,2,skin); R(x+5,y+7,3,2,skin); }
-      else         { R(x+1,y+7,3,2,skin); R(x+4,y+7,3,2,skin); }
+      // typing hands alternate on the agent's own phase
+      if (Math.floor((a.phase||0)*2)%2){ R(x,y+7,3,2,skin); R(x+5,y+7,3,2,skin); }
+      else                           { R(x+1,y+7,3,2,skin); R(x+4,y+7,3,2,skin); }
       R(x+1,y+1,6,6,skin);             // head
       R(x+1,y+0,6,3,hair);             // hair
       R(x+1,y+4,6,1,"#00000022");      // jaw shadow
     } else {
       // legs: 2-frame walk cycle
-      const step = frame%2 ? 1 : -1;
+      const step = Math.floor(a.phase||0)%2 ? 1 : -1;
       R(x+2,y+8,4,5,shirt);            // torso
       R(x+1,y+8,1,4,skin); R(x+6,y+8,1,4,skin);   // arms swinging
       R(x+2,y+13,2,1,"#2b3644"); R(x+4+step,y+13,2,1,"#2b3644");  // legs
@@ -178,22 +230,32 @@ export function createTown(canvas, onStatus){
     return { x:d.x+s.dx, y:d.y+s.dy+(d.face==="up"?4:-4) };
   }
 
-  function step(){
+  /* Delta-time movement on a 60fps rAF.
+     It used to advance a FIXED 0.55px step and repaint at ~11fps, so an agent
+     crossing the office took 40 discrete jumps per second-of-wallclock and read
+     as a stutter rather than a walk. Speed is now in pixels per SECOND and the
+     step is scaled by real elapsed time, so movement is frame-rate independent
+     and continuous. */
+  const SPEED = 46;            // virtual px per second
+  const ARRIVE = 0.35;         // within this distance, the agent is seated
+
+  function step(dt){
     let busy = 0;
+    const k = Math.min(dt, 0.1) * SPEED;   // clamp so a stalled tab cannot teleport
     for (const a of Object.values(agents)){
-      const sitting = Math.abs(a.x-a.tx)<0.6 && Math.abs(a.y-a.ty)<0.6;
-      if (!sitting){
-        const dx = a.tx-a.x, dy = a.ty-a.y;
-        const d = Math.hypot(dx,dy) || 1;
-        const sp = 0.55;
-        a.x += dx/d*Math.min(sp,d); a.y += dy/d*Math.min(sp,d);
+      const dx = a.tx-a.x, dy = a.ty-a.y;
+      const d = Math.hypot(dx,dy);
+      if (d > ARRIVE){
+        const move = Math.min(k, d);       // never overshoot the seat
+        a.x += dx/d*move; a.y += dy/d*move;
         if (Math.abs(dx) > 0.2) a.dir = dx < 0 ? -1 : 1;
         a.walk = true;
+        a.phase = (a.phase || 0) + move * 0.14;   // drives the leg cycle
       } else {
         a.walk = false;
+        a.phase = (a.phase || 0) + dt;            // idle sway
         if (a.status==="working") busy++;
       }
-      // keep inside the room
       a.x = Math.max(6, Math.min(VW-6, a.x));
       a.y = Math.max(20, Math.min(VH-4, a.y));
     }
@@ -224,9 +286,11 @@ export function createTown(canvas, onStatus){
 
   function loop(ts){
     raf = requestAnimationFrame(loop);
-    if (ts-last < 90) return;         // ~11fps: pixel art does not need 60
+    // 60fps. Smoothness comes from delta-time motion, not from a low repaint
+    // rate, so there is no reason to throttle the loop any more.
+    const dt = last ? Math.min((ts-last)/1000, 0.1) : 0.016;
     last = ts; frame++;
-    const busy = step();
+    const busy = step(dt);
     paint();
     if (onStatus) onStatus(busy);
   }

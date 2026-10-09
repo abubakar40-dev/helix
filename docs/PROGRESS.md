@@ -4285,3 +4285,106 @@ The orb renders as a large orange sphere filling its panel. Screenshotting the *
 is simply how this orb looks, and it is the orb the human has said they like. Making it
 subtler would mean editing the orb, which has been ruled out three times. Flagged, not
 changed.
+
+---
+
+## 2026-10-10 — Phase 5: chat box, file upload, dimmed orb
+
+Four of the seven requests taken in this pass. The other three (agent sprites,
+gesture control, globe replacement) are queued and named at the end.
+
+### 1. Orb brightness — dimmed **in the console copy only**
+
+The human asked for a less "sun-like" centre. Changed in `ui/console/orbScene.js` **only**;
+`ui/voice-core/` is untouched (`git status ui/voice-core/` empty), honouring the rule
+given three times earlier.
+
+The cause was the bloom **threshold**, not just its strength: `threshold 0.2` means
+essentially every sprite blooms, and with ~1700 additive text sprites inside the shell
+the centre saturates to solid orange. Now `strength 0.7 / threshold 0.55`, which leaves
+only the genuinely bright core glowing and lets the ring structure and the individual
+code-text particles stay readable. Confirmed by screenshot — the rings are now visible
+where before there was a featureless white-hot blob.
+
+### 2. 🔴 File upload: `/upload` — any type, any size, streamed
+
+New write path on the bridge, same CSRF guard as `/say` (`X-Helix-Voice`).
+
+**Streamed to disk in chunks, never `rfile.read(Content-Length)`.** That buffers the
+whole file in RAM and this box has 6.9GB with ~1GB free, so "any size" has to mean the
+disk is the limit rather than the process. Cap 2GB, streamed at 256KB a line.
+
+Handed to the **`document`** profile, not the CEO: reading and converting files is that
+agent's entire job (§7.2) and it saves a delegation hop.
+
+**Three real bugs, all found by testing rather than by reading:**
+
+1. **Deadlocked.** My sliding-buffer boundary search hung forever on the closing
+   `--boundary--`; curl timed out at 28. Rewritten line-based, which is correct because
+   multipart guarantees every delimiter starts a line.
+2. **Every upload reported "no file part".** The state machine read the **first**
+   boundary line as if it were the closing one and exited immediately.
+3. **The file part's `Content-Disposition` header was being eaten.** After a part's body
+   I read an extra line assuming it was a delimiter, but the line that ends the body
+   *is* the delimiter — so the read consumed the next part's header and the file was
+   never recognised.
+4. **Binary uploads were 2 bytes long.** The CRLF before a boundary belongs to the
+   delimiter, not the file. Trimming it while the write handle was still open did nothing;
+   it had to happen after close.
+
+**Verified byte-exact**, md5 compared against the source, not just "it arrived":
+
+| file | result |
+|---|---|
+| `helix-backup-guide.pdf` (25,598 B) | **md5 IDENTICAL** |
+| 800x600 PNG | **md5 IDENTICAL** |
+| `.txt`, `.json` | accepted, exact size |
+
+**End-to-end, real agent work.** Uploaded the PDF with "How many pages and what is the
+title?" → task `t_9449a51a` → `document` → **52s** →
+*"10 pages; title is 'Backing Up Personal Data on a Linux Laptop'… Verified with
+pdfplumber."* Checked independently with pypdf: **10 pages**, title present on page 1. Exact.
+
+**Note on the queue:** uploads serialise because `kanban.max_in_progress` is **1** — a
+deliberate RAM setting, not a bug. I initially read a stuck task as a broken dispatch; it
+was three uploads waiting their turn. Two trivial test tasks were archived to let the PDF
+through, and `archive` was confirmed reversible (status only, row intact).
+
+### 3. 🔴 The right column is now the real chat box
+
+Was a log viewer. Now: **your messages and Helix's replies**, a **typing box**, and a
+**file attach button**. Text goes through the **same `/say` + `/task` path the voice loop
+uses** — pure reuse, not a second conversation mechanism. The agent's reply is its own
+Kanban summary, read back from the board.
+
+Pasting an image straight into the box also uploads it.
+
+Verified end to end by typing into the real box and clicking send:
+
+```
+YOU   : Reply with exactly: CHAT-TYPED-OK and nothing else.
+HELIX : Replied exactly: CHAT-TYPED-OK with nothing else, per task instruction.
+```
+
+The tabs became **CHAT / TOOLS / NOTES**, each with its own container. Previously the
+tool-call view overwrote `#stream`, so a chat and a tool-call view could never coexist.
+TOOLS keeps the real activity stream; NOTES says plainly it is not built rather than
+showing a mock.
+
+### 4. Layout
+
+Left rail made responsive: the globe is now the flexible panel and camera/headlines yield
+space on short windows, with a `min-height: 700px` branch giving the globe real room on a
+normal laptop. Measured **`overflow: []`** at the harness's 892x554 viewport, which was
+previously overflowing.
+
+### Still queued from this batch, not built
+- **Agent sprites look fake** — the current sprites are drawn by `town.js`, not an asset.
+  Worth a real look at free pixel-art office assets before redrawing by hand, but I will
+  not import a repo without checking its licence and whether it actually animates.
+- **Gesture control** (rotate/zoom the orb by hand, via Python) — this is requirements
+  §21 and it wants the camera, which is now working, so it is buildable. Not started.
+- **Replacing God's Eye View** — pushed back once and not yet done deliberately. It is
+  *verified working* (live satellite TLEs, 27 launches); replacing verified data with an
+  unknown repo is more likely to hurt than help. The right move is to find out what
+  "isn't working as expected" actually is first. Say the word and I will swap it anyway.

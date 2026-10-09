@@ -100,8 +100,26 @@ main{
 
 /* ── left rail ─────────────────────────────────────────── */
 #left{display:flex;flex-direction:column;gap:8px;min-height:0}
-#globePanel{flex:1 1 0;min-height:78px}
-#hlPanel{flex:0 1 auto;min-height:70px;max-height:32vh}
+/* The globe is the flexible one: on a normal laptop window the left rail is
+   ~640px and this gets ~380px, which is where its own HUD becomes readable.
+   The mins are set so a SHORT window degrades instead of overflowing - three
+   stacked panels need ~340px and the harness viewport is only 554px tall. */
+#globePanel{flex:1 1 auto;min-height:64px}
+#hlPanel{flex:0 1 auto;min-height:56px;max-height:32vh}
+
+/* Enough vertical room: give the globe real space instead of a cramped strip. */
+@media (min-height:700px){
+  #camPanel{flex:0 0 168px}
+  #globePanel{min-height:200px}
+  #hlPanel{min-height:96px}
+}
+/* Very short windows: the headlines list is the least useful of the three, so it
+   gives up its space first rather than pushing the others off-screen. */
+@media (max-height:620px){
+  #hlPanel{min-height:44px;max-height:22vh}
+  #camPanel{min-height:80px}
+  #globePanel{min-height:56px}
+}
 #headlines{overflow:auto;padding:4px 10px 8px;flex:1 1 auto}
 #headlines .it{display:flex;gap:8px;padding:5px 0;border-bottom:1px solid #101923}
 #globeTools button{
@@ -118,7 +136,7 @@ main{
 #mapModes button[aria-selected=true]{border-color:var(--cy);color:var(--cy)}
 /* Fixed height, not flex-grown: .panel .pb carries flex:1;min-height:0, so a
    camera panel left to flex collapsed to its 33px header and showed nothing. */
-#camPanel{flex:0 1 145px;min-height:96px}
+#camPanel{flex:0 1 150px;min-height:88px}
 #camPanel .pb{flex:1 1 auto;min-height:0;background:#05080c}
 #camFeed{width:100%;height:100%;object-fit:cover;display:block;image-rendering:auto}
 #camOff,#camErr{position:absolute;inset:0;display:grid;place-content:center;
@@ -152,6 +170,37 @@ main{
   text-align:center;color:var(--dim);background:#080d13f2;padding:20px}
 #townNote b{color:var(--hi);font-size:12px;letter-spacing:.1em}
 #townNote span{font-size:10px}
+
+/* ── console (right): chat ─────────────────────────────────── */
+#convo{display:flex;flex-direction:column}
+#stream{flex:1 1 auto;min-height:0}
+.msg{margin-bottom:9px;max-width:92%}
+.msg .who{font-size:9px;letter-spacing:.14em;margin-bottom:3px}
+.msg .bub{padding:7px 9px;border-radius:8px;white-space:pre-wrap;word-break:break-word;
+  font:11px/1.5 inherit}
+.msg.me{align-self:flex-end;text-align:right}
+.msg.me .who{color:var(--cy)}
+.msg.me .bub{background:#12303a;border:1px solid #1d4b5c;color:#d8f4ff}
+.msg.ai .who{color:var(--gr)}
+.msg.ai .bub{background:#101a14;border:1px solid #1d3a28;color:#d5e8dc}
+.msg.sys .bub{background:#0d141c;border:1px solid var(--line);color:var(--dim);font-size:10px}
+.msg .att{margin-top:5px;font-size:10px;color:var(--am);
+  border-top:1px solid #3a2f16;padding-top:4px}
+#composer{flex:0 0 auto;border-top:1px solid var(--line);padding:7px 8px;background:#080d13}
+#chips{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px}
+#chips:empty{display:none}
+.chip{font-size:10px;padding:3px 8px;border-radius:99px;background:#13202c;
+  border:1px solid var(--cy);color:var(--cy);display:flex;gap:6px;align-items:center}
+.chip .x{cursor:pointer;color:var(--dim)}
+.crow{display:flex;gap:6px;align-items:center}
+#typebox{flex:1;min-width:0;padding:8px 10px;border-radius:7px;background:#0b131b;
+  border:1px solid var(--line);color:var(--ink);font:12px/1.3 inherit;outline:none}
+#typebox:focus{border-color:var(--cy)}
+#composer button{width:32px;height:32px;flex:0 0 32px;border-radius:7px;cursor:pointer;
+  background:#0e1922;border:1px solid var(--line);color:var(--ink);font-size:14px}
+#composer button:hover{border-color:var(--cy);color:var(--cy)}
+#send{background:#0d2a33;border-color:var(--cy);color:var(--cy)}
+#composer button:disabled{opacity:.4;cursor:not-allowed}
 
 /* ── console (right) ───────────────────────────────────── */
 #tabs{display:flex;gap:2px;margin-left:6px}
@@ -283,12 +332,26 @@ main{
     <div class="ph">
       <span class="tag">◉</span> Console
       <div id="tabs">
-        <button class="tab" data-c="voice" aria-selected="true">VOICE</button>
-        <button class="tab" data-c="agent" aria-selected="false">AGENT <span id="actCount"></span></button>
+        <button class="tab" data-c="chat" aria-selected="true">CHAT</button>
+        <button class="tab" data-c="agent" aria-selected="false">TOOLS <span id="actCount"></span></button>
         <button class="tab" data-c="notes" aria-selected="false">NOTES</button>
       </div>
     </div>
-    <div class="pb"><div id="stream"></div></div>
+    <div class="pb" id="convo">
+      <div id="stream"></div>
+      <div id="toolsView" hidden></div>
+      <div id="notesView" hidden><div class="msg sys"><div class="bub">
+        Notes view is not built yet — shown honestly rather than as a mock.</div></div></div>
+      <div id="composer">
+        <div id="chips"></div>
+        <div class="crow">
+          <button id="attach" title="Send a file to Helix">&#128206;</button>
+          <input id="typebox" type="text" placeholder="Type a command for Helix&hellip;" autocomplete="off">
+          <button id="send" title="Send">&#10148;</button>
+        </div>
+        <input id="fileInput" type="file" hidden>
+      </div>
+    </div>
   </section>
 </main>
 
@@ -309,7 +372,7 @@ const log = (txt, cls="info") => {
   const d = document.createElement("div");
   d.className = "ev " + cls;
   d.innerHTML = `<div class="hd"><b>${new Date().toTimeString().slice(0,8)}</b><span>${txt}</span></div>`;
-  const s = $("#stream"); s.prepend(d);
+  const s = $("#toolsView"); s.prepend(d);
   while (s.children.length > 120) s.lastChild.remove();
 };
 
@@ -455,6 +518,108 @@ function camStop(){
 }
 $("#camToggle").onclick = () => camOn ? camStop() : camStart();
 
+/* ── the chat box: typed commands and file uploads ─────────────────────
+   Text goes through the SAME /say + /task path the voice loop uses, so this
+   is reuse rather than a second conversation mechanism: POST /say creates a
+   real Kanban task for the CEO, GET /task reads the worker's own summary back.
+   Files go to /upload, which streams to ~/helix/inbox and hands the path to the
+   document profile. */
+const H = {"X-Helix-Voice": "1"};
+let busyChat = false;
+
+function addMsg(who, text, att){
+  const d = document.createElement("div");
+  d.className = "msg " + who;
+  const label = {me:"YOU", ai:"HELIX", sys:"SYSTEM"}[who] || who;
+  d.innerHTML = `<div class="who">${label}</div><div class="bub"></div>`;
+  d.querySelector(".bub").textContent = text;
+  if (att) {
+    const a = document.createElement("div");
+    a.className = "att";
+    a.textContent = "\u{1F4CE} " + att;
+    d.querySelector(".bub").appendChild(a);
+  }
+  $("#stream").appendChild(d);
+  $("#stream").scrollTop = $("#stream").scrollHeight;
+  return d;
+}
+
+async function ask(text){
+  if (busyChat || !text.trim()) return;
+  busyChat = true;
+  $("#send").disabled = true; $("#typebox").disabled = true;
+  addMsg("me", text);
+  const pending = addMsg("ai", "\u2026 Helix is working on it\u2026");
+  let res, id = null;
+  try {
+    res = await (await fetch("/say", {method:"POST", headers:{...H, "Content-Type":"application/json"},
+                                   body: JSON.stringify({text})})).json();
+    id = res.task;
+  } catch(e) {
+    pending.querySelector(".bub").textContent = "Could not reach Helix: " + e.message;
+    busyChat = false; $("#send").disabled = false; $("#typebox").disabled = false;
+    return;
+  }
+  if (!id) {
+    pending.querySelector(".bub").textContent = (res && res.error) || "No task was created.";
+    busyChat = false; $("#send").disabled = false; $("#typebox").disabled = false;
+    return;
+  }
+  // poll for the worker's own summary, then give up LOUDLY rather than spinning
+  const deadline = Date.now() + 240000;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 2000));
+    let t;
+    try { t = await (await fetch("/task?id=" + encodeURIComponent(id))).json(); } catch(e) { continue; }
+    if (t.status === "done"){ pending.querySelector(".bub").textContent = t.summary || "(no summary)"; break; }
+    if (t.status === "failed" || t.status === "archived"){
+      pending.querySelector(".bub").textContent = "Helix could not do this: " + (t.summary || t.status); break; }
+  }
+  if (Date.now() >= deadline) pending.querySelector(".bub").textContent =
+    "Still running after 4 minutes — it has not failed, I just stopped waiting. Task " + id;
+  busyChat = false;
+  $("#send").disabled = false; $("#typebox").disabled = false;
+}
+
+async function upload(file){
+  const fd = new FormData();
+  fd.append("text", $("#typebox").value || "");
+  fd.append("file", file, file.name);
+  const mb = (file.size/1048576).toFixed(2);
+  const hold = addMsg("sys", `Uploading ${file.name} (${mb} MB)…`);
+  try {
+    const r = await (await fetch("/upload", {method:"POST", headers:H, body:fd})).json();
+    if (!r.ok){ hold.querySelector(".bub").textContent = "Upload failed: " + r.error; return; }
+    hold.querySelector(".bub").textContent = "Sent to Helix.";
+    addMsg("me", "Sent you a file.", `${r.name} · ${mb} MB`);
+    $("#typebox").value = "";
+    if (r.task){
+      const pending = addMsg("ai", "\u2026 Helix is reading it\u2026");
+      const deadline = Date.now() + 300000;
+      while (Date.now() < deadline) {
+        await new Promise(r2 => setTimeout(r2, 2500));
+        let t;
+        try { t = await (await fetch("/task?id=" + encodeURIComponent(r.task))).json(); } catch(e) { continue; }
+        if (t.status === "done"){ pending.querySelector(".bub").textContent = t.summary || "(done, no summary)"; break; }
+        if (t.status === "failed" || t.status === "archived"){
+          pending.querySelector(".bub").textContent = "Could not process it: " + (t.summary || t.status); break; }
+      }
+      if (Date.now() >= deadline) pending.querySelector(".bub").textContent =
+        "Still working on it. Task " + r.task;
+    }
+  } catch(e){ hold.querySelector(".bub").textContent = "Upload failed: " + e.message; }
+}
+
+$("#send").onclick = () => { const v = $("#typebox").value; $("#typebox").value = ""; ask(v); };
+$("#typebox").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); $("#send").click(); } });
+$("#attach").onclick = () => $("#fileInput").click();
+$("#fileInput").onchange = e => { const f = e.target.files[0]; if (f) upload(f); e.target.value = ""; };
+// paste an image straight into the box
+$("#typebox").addEventListener("paste", e => {
+  const it = [...(e.clipboardData?.items||[])].find(i => i.type.startsWith("image/"));
+  if (it){ e.preventDefault(); upload(it.getAsFile()); } });
+
 /* ── real tool calls, from state.db via /activity ────────────────────── */
 let actMode = "voice";
 const esc = s => String(s??"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
@@ -469,7 +634,7 @@ function startActivityPoll(){
 }
 
 async function activity(){
-  const el = $("#stream");
+  const el = $("#toolsView");
   el.innerHTML = '<div class="ev info"><div class="bd">loading real tool calls…</div></div>';
   let d;
   try { d = await (await fetch("/activity")).json(); }
@@ -529,13 +694,12 @@ document.querySelectorAll("#townhead .tab").forEach(b=>b.onclick=()=>{
 document.querySelectorAll("#tabs .tab").forEach(b=>b.onclick=()=>{
   document.querySelectorAll("#tabs .tab").forEach(x=>x.setAttribute("aria-selected", x===b));
   actMode = b.dataset.c;
+  const which = { chat:"#stream", agent:"#toolsView", notes:"#notesView" }[b.dataset.c];
+  ["#stream","#toolsView","#notesView"].forEach(id =>
+    document.querySelector(id).hidden = (id !== which));
+  $("#composer").hidden = b.dataset.c !== "chat";
   if (b.dataset.c === "agent"){ activity(); startActivityPoll(); }
-  else {
-    clearInterval(_actTimer);
-    log(b.dataset.c === "voice"
-        ? "switched to the kanban event stream"
-        : "notes view not built yet — honest, not faked", "info");
-  }
+  else clearInterval(_actTimer);
 });
 $("#chatBtn").onclick = ()=> log("text chat not built yet — voice/whatsapp are the live channels","info");
 

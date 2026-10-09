@@ -436,6 +436,123 @@ def task(task_id):
             "summary": summary.strip()[:1200]}
 
 
+INBOX = os.path.expanduser("~/helix/inbox")
+MAX_UPLOAD = 2 * 1024 * 1024 * 1024     # 2GB; disk, not RAM, is the real limit
+CHUNK = 256 * 1024
+
+_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_name(name):
+    """Strip anything path-like. An upload name is attacker-controlled text."""
+    base = os.path.basename((name or "").replace("\\", "/")).strip() or "upload.bin"
+    base = _SAFE.sub("_", base).lstrip(".")[:120]
+    return base or "upload.bin"
+
+
+def _mk_task(title, body, assignee="default"):
+    out = subprocess.run(
+        ["hermes", "kanban", "create", title[:120], "--body-file", "-",
+         "--assignee", assignee, "--workspace", "scratch"],
+        input=body, capture_output=True, text=True, timeout=120)
+    if out.returncode != 0:
+        return {"ok": False, "error": (out.stderr or out.stdout).strip()[:200]}
+    m = re.search(r"\b(t_[0-9a-f]{4,32})\b", out.stdout)
+    return {"ok": True, "task": m.group(1) if m else None}
+
+
+def read_multipart(handler, dest_dir):
+    """Stream a multipart/form-data upload to disk, line by line.
+
+    Not `rfile.read(Content-Length)`: that buffers the whole file in RAM and this
+    box has 6.9GB with ~1GB free, so "any size" has to mean the disk is the
+    limit, not the process is.
+
+    Line-based because multipart guarantees every boundary delimiter starts at
+    the beginning of a line, which makes readline() a correct streaming parser.
+    My first version searched a sliding buffer for the boundary and deadlocked
+    on the closing `--boundary--` (curl timed out at 28).
+    """
+    os.makedirs(dest_dir, exist_ok=True)
+    ctype = handler.headers.get("Content-Type", "")
+    if not ctype.startswith("multipart/form-data"):
+        return None, "not multipart/form-data"
+    m = re.search(r'boundary="?([^";]+)"?', ctype)
+    if not m:
+        return None, "no multipart boundary in Content-Type"
+    dash = b"--" + m.group(1).encode()
+    total = int(handler.headers.get("Content-Length") or 0)
+    if total > MAX_UPLOAD:
+        return None, f"too large (limit {MAX_UPLOAD // (1024 * 1024)}MB)"
+
+    r = handler.rfile
+    fields, path, name, size = {}, "", "", 0
+    # The body STARTS with the opening delimiter, so it must be consumed once
+    # before the part loop; treating it as a closing one exits immediately and
+    # reports "no file part" for every upload.
+    first = r.readline()
+    if not first.startswith(dash):
+        return None, "malformed multipart body"
+    final = False
+    while True:
+        hdrs = {}
+        while True:
+            h = r.readline()
+            if not h or h in (b"\r\n", b"\n"):
+                break
+            k, _, v = h.decode("latin1").partition(":")
+            hdrs[k.strip().lower()] = v.strip()
+        disp = hdrs.get("content-disposition", "")
+        nm = re.search(r'name="([^"]*)"', disp)
+        fn = re.search(r'filename="([^"]*)"', disp)
+        # The line that terminates a part's body IS the boundary delimiter, so it
+        # must be captured here rather than read again afterwards: reading an
+        # extra line ate the NEXT part's Content-Disposition header, which is why
+        # every upload reported "no file part" - the file header was gone.
+        tail = None
+        if fn:
+            name = _safe_name(fn.group(1))
+            stem, ext = os.path.splitext(name)
+            path = os.path.join(dest_dir, f"{int(time.time())}_{stem}{ext}")
+            with open(path, "wb") as f:
+                while True:
+                    chunk = r.readline()
+                    if not chunk or chunk.startswith(dash):
+                        tail = chunk
+                        break
+                    f.write(chunk)
+                    size += len(chunk)
+            # AFTER the write handle is closed: truncating inside it left the
+            # extra 2 bytes in place. The CRLF before a boundary belongs to the
+            # delimiter, not the file, so binary uploads were 2 bytes long.
+            if size >= 2:
+                with open(path, "r+b") as f:
+                    f.seek(-2, os.SEEK_END)
+                    if f.read(2) == b"\r\n":
+                        f.seek(-2, os.SEEK_END)
+                        f.truncate()
+                        size -= 2
+        elif nm:
+            buf = []
+            while True:
+                chunk = r.readline()
+                if not chunk or chunk.startswith(dash):
+                    tail = chunk
+                    break
+                buf.append(chunk)
+            fields[nm.group(1)] = b"".join(buf).decode("utf-8", "replace").strip()
+        if not nm and not fn:
+            break
+        if not tail:
+            break
+        if tail.startswith(dash + b"--"):
+            final = True
+            break
+    if not path:
+        return None, "no file part in the upload"
+    return {"fields": fields, "path": path, "name": name, "size": size}, None
+
+
 def say(text):
     """Create a Kanban task for the CEO from a voice transcript.
 
@@ -763,10 +880,34 @@ class Handler(BaseHTTPRequestHandler):
         # here. Any page in any browser can POST to 127.0.0.1, so requiring a custom
         # header forces a CORS preflight that we never answer — a foreign page then
         # cannot make the browser send it.
-        if self.path.split("?", 1)[0] not in ("/say", "/stt", "/tts"):
+        if self.path.split("?", 1)[0] not in ("/say", "/stt", "/tts", "/upload"):
             return self.send_error(404)
         if self.headers.get("X-Helix-Voice") != "1":
             return self._send_json({"ok": False, "error": "missing X-Helix-Voice header"}, 403)
+        if self.path.split("?", 1)[0] == "/upload":
+            info, err = read_multipart(self, INBOX)
+            if err:
+                return self._send_json({"ok": False, "error": err}, 400)
+            note = (info["fields"].get("text") or "").strip()
+            size_mb = round(info["size"] / 1048576, 2)
+            body = (
+                f"The human uploaded a file through the Helix console chat.\n\n"
+                f"  path : {info['path']}\n"
+                f"  name : {info['name']}\n"
+                f"  size : {size_mb} MB\n"
+                + (f"\nTheir instruction: {note}\n" if note else "\n")
+                + "\nProcess it as asked: read/extract/convert/summarise as "
+                  "appropriate, verify the output really exists, and report what "
+                  "you produced. Do not claim success without checking the file.\n"
+            )
+            # document, not the CEO: reading/converting files is that profile's
+            # whole job (requirements 7.2), and it saves a delegation hop. The
+            # CEO stays the entry point for voice/typed conversation.
+            task = _mk_task(f"Uploaded file: {info['name']}", body, assignee="document")
+            return self._send_json({"ok": True, "path": info["path"],
+                                    "name": info["name"], "size": info["size"],
+                                    "task": task.get("task"),
+                                    "taskError": task.get("error")})
         n = int(self.headers.get("Content-Length") or 0)
         is_stt = self.path.split("?", 1)[0] == "/stt"
         is_tts = self.path.split("?", 1)[0] == "/tts"

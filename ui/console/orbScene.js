@@ -22,14 +22,20 @@ function createOrbScene(container) {
   container.appendChild(renderer.domElement);
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
+  // Dimmed for the console layout. At strength 1.8 / threshold 0.2 this read as
+  // a blazing sun rather than a thinking orb: the threshold that low means
+  // essentially EVERY sprite blooms, and with ~1700 additive text sprites inside
+  // the shell the centre saturates to solid orange.
+  // 0.7 strength with a 0.55 threshold leaves only the genuinely bright core
+  // glowing and lets the individual text sprites stay readable as particles.
   const bloom = new UnrealBloomPass(
     new THREE.Vector2(width, height),
-    1.8,
+    0.7,
     // strength
-    0.4,
+    0.45,
     // radius
-    0.2
-    // threshold
+    0.55
+    // threshold  <- raised: this is what stops the whole orb blooming
   );
   composer.addPass(bloom);
   const chromaticShader = {

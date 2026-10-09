@@ -4,12 +4,15 @@
 // Display names are display-only per requirements §16.1: the profile ids stay
 // lowercase role names and are shown in the tooltip.
 
+// Brightened. At these values the whole office measured as near-black on screen:
+// the palette sat around #26303c on a #05080d page, and at the panel's real size
+// the town read as an empty black box. A screenshot showed it; the DOM never did.
 const PAL = {
-  floorA:"#2a3340", floorB:"#26303c", wood:"#4a3a2c", rug:"#1d2833",
-  wall:"#141c25", wallTop:"#1b2530", desk:"#3a4756", deskTop:"#465566",
-  screen:"#7dd3fc", screenDim:"#1e3a4d", chair:"#2f3a47",
-  plant:"#2f7d4f", pot:"#5b4632", cooler:"#4a90a4",
-  paper:"#c9d6e2", frame:"#3d4b5a"
+  floorA:"#4a5a6b", floorB:"#44546a", wood:"#7a6248", rug:"#33465a",
+  wall:"#243140", wallTop:"#31435a", desk:"#5d6f85", deskTop:"#6f8399",
+  screen:"#9fe3ff", screenDim:"#2f5a78", chair:"#47576b",
+  plant:"#3fa968", pot:"#8a6a4a", cooler:"#5fb3c9",
+  paper:"#e8f2fb", frame:"#5a6b7d"
 };
 
 // 9 agents, 9 distinct shirts. Helix (CEO) gets the brightest.
@@ -26,7 +29,11 @@ const LOOK = {
 };
 
 // ── office geometry, in virtual pixels ────────────────────────────────────────
-const VW = 336, VH = 210, SCALE = 2;
+// Room design size. The canvas is sized to its panel 1:1 at runtime instead of
+// being drawn at a fixed 2x and downscaled: at a 238px panel a 672px canvas is
+// scaled 2.8x down, which averages the pixel art into a dark blur. Pixel art has
+// to land on real device pixels to read as pixel art.
+const VW = 336, VH = 210;
 
 // 9 desks: 5 along the top wall, 4 along the bottom. Each seat knows which way
 // the desk faces, so the sprite can sit on the correct side of it.
@@ -40,12 +47,26 @@ const DESKS = [
 const SEAT = { up:{dx:0, dy:9}, down:{dx:0, dy:-9} };
 
 export function createTown(canvas, onStatus){
-  canvas.width = VW*SCALE; canvas.height = VH*SCALE;
   const ctx = canvas.getContext("2d");
-  // Draw in virtual pixels: without this the room paints into the top-left
-  // quarter of the canvas and the rest stays black (measured: 75% black).
-  ctx.scale(SCALE, SCALE);
   ctx.imageSmoothingEnabled = false;
+  // Fit the room to the panel at 1:1, letterboxing rather than stretching so the
+  // aspect ratio of the office never distorts.
+  let fit = 1;
+  const resize = () => {
+    const box = canvas.parentElement.getBoundingClientRect();
+    const w = Math.max(160, Math.floor(box.width));
+    const h = Math.max(110, Math.floor(box.height));
+    canvas.style.width = w + "px";
+    canvas.style.height = h + "px";
+    canvas.width = w; canvas.height = h;
+    fit = Math.min(w / VW, h / VH);
+    ctx.imageSmoothingEnabled = false;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.translate((w - VW * fit) / 2, (h - VH * fit) / 2);
+    ctx.scale(fit, fit);
+  };
+  resize();
+  if (window.ResizeObserver) new ResizeObserver(resize).observe(canvas.parentElement);
 
   // agents keyed by profile id; order fixed to DESKS so a desk is always the same
   const agents = {};

@@ -4207,3 +4207,81 @@ vision_analyze, read_file`), **0 console errors**.
 And the recurring one, for the seventh time: I twice reported "no calls rendered" and
 "the click did nothing" when the page had simply not finished loading. Probing a page
 before its handlers are attached produces findings indistinguishable from real ones.
+
+### UI Phase 4 — MEDIA LINK: the real webcam, as an MJPEG stream
+
+The camera was checked **before** any code was written, and then used rather than a
+screenshot fallback.
+
+`/dev/video0` is a **Microdia Integrated_Webcam_HD**; PipeWire lists it as
+`media.class = "Video/Source"`; ffmpeg 8.0.1 captures it directly. Cost measured before
+committing to it: **320x240@5fps ≈ 9% CPU, ~308 KB/s** — acceptable, but only if lazy,
+so it starts on a button press and stops when the panel is closed.
+
+The captured test frame was **deleted from the repo rather than committed**. It is a
+photograph of the human, and no face images belong in git. The pipeline was proven by
+decoding it, not by keeping it.
+
+New endpoints, stdlib-only like the rest of the bridge:
+- **`GET /cam`** — `multipart/x-mixed-replace` straight from ffmpeg
+- **`GET /cam/stop`** — reaps the process
+
+#### 🔴 Three real bugs, all caught by measuring the bytes rather than trusting the code
+
+**1. The parts were not JPEGs at all.** My first version read fixed **4096-byte chunks**
+and declared each one a frame. Measured on a 760 KB capture: **0 complete JPEGs**, every
+part exactly 4096 bytes. `curl` "worked" because it dumps bytes — a browser correctly
+refused. Fixed by finding frames on their SOI/EOI markers. After the fix: **127 complete
+JPEGs, 0 malformed, decoding at 640x360.**
+
+**2. `transfer-encoding: chunked` made it undecodable.** The request came back **200 with
+the correct content-type and still produced no frame**. Under HTTP/1.1 an endless body
+with no Content-Length is chunked, and browsers cannot decode a chunked multipart image
+stream. That endpoint now sets `protocol_version = "HTTP/1.0"` and `Connection: close`,
+which is the framing `multipart/x-mixed-replace` actually expects.
+
+**3. Three concurrent clients opened the camera three times.** A second client then got
+**zero bytes** — the device was contended, not broken. One stream at a time now.
+
+Verified in both directions:
+```
+3 clients connected -> 1 ffmpeg process;  all disconnect -> 0
+during a live stream: /state 200 in 6ms, /cortex 200 in 3ms   (ThreadingHTTPServer)
+```
+
+#### 🔴 And one where the screenshot caught what the DOM could not
+
+The panel rendered **"CAMERA OFF" painted on top of the live feed**. Cause: my author CSS
+`#camOff{display:grid}` **beats the UA stylesheet's `[hidden]{display:none}`**, so the
+`hidden` attribute did nothing. Every DOM check said the element was hidden — the DOM was
+right and the *rendering* was wrong. `#camOff[hidden]{display:none}` restores it.
+
+The same screenshot showed two more: the town reading as black, and a status bar reading
+`model —` forever.
+
+- **Town was too dark and downscaled.** Palette measured near-black against the page, and
+  a 672px canvas was being scaled **2.8x down** into a 238px panel, averaging pixel art
+  into a blur. Brightened, and the canvas now sizes itself **1:1 to its panel**
+  (measured `oneToOne: true`, `238x181` canvas = `238x181` CSS) via a ResizeObserver.
+  An ASCII luminance map confirms desks, corridor, rug and agents all present.
+- **`model` had no writer.** The element existed in the markup and nothing ever set it —
+  dead UI. Added `runtime_info()` to the bridge: real model
+  (`nvidia/nemotron-3.5-lightning:free`) and real context tokens (**53,981**, bar at 27%).
+
+#### 🔴 A wrong measurement dressed as a real one — my own worst kind
+
+My first context query read `last_prompt_tokens` as a **column** of `gateway_routing`. It
+is not — the table is `(scope, session_key, entry_json, updated_at)` and the number lives
+inside the JSON (the watchdog has always parsed it that way). The sqlite error was caught
+by a bare `except: pass` and the status bar confidently showed **`0`**.
+
+A wrong number that looks right is worse than a missing one, so a failed read now reports
+`"n/a"`, never a figure. Real value after the fix: **53,981**.
+
+#### The orb is blown out — and it is not my doing
+
+The orb renders as a large orange sphere filling its panel. Screenshotting the **untouched
+`/voice-core/`** shows the same thing, so the copy is faithful and nothing regressed; that
+is simply how this orb looks, and it is the orb the human has said they like. Making it
+subtler would mean editing the orb, which has been ruled out three times. Flagged, not
+changed.

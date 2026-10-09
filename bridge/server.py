@@ -117,7 +117,49 @@ def snapshot():
         ]
     finally:
         conn.close()
+    out.update(runtime_info())
     return out
+
+
+def runtime_info():
+    """Model actually in use + live context usage, for the status bar.
+
+    The status bar had a `model` field that nothing ever wrote, so it read "—"
+    forever. Both numbers here are measured, not labelled: the model is the
+    resolved `model.default` of the profile that owns the gateway, and the token
+    count is `gateway_routing.last_prompt_tokens` - the same column the watchdog
+    reads. Never raises: a status bar is not worth a 500.
+    """
+    info = {"model": "", "ctx": None, "ctx_max": 200000}
+    try:
+        import yaml  # only needed here; the rest of the bridge stays stdlib
+        cfg = os.path.join(HERMES_HOME, "config.yaml")
+        if os.path.exists(cfg):
+            info["model"] = (yaml.safe_load(open(cfg)) or {}).get("model", {}).get("default", "")
+    except Exception:
+        pass
+    # last_prompt_tokens is NOT a column: gateway_routing is
+    # (scope, session_key, entry_json, updated_at) and the number lives inside
+    # the JSON. I first queried it as a column; the sqlite error was swallowed
+    # by a bare except and the status bar reported a confident, invented 0.
+    # A wrong measurement dressed as a real one is the failure mode this project
+    # keeps paying for, so a failure here reports "unknown", never a number.
+    info["ctx"] = None
+    try:
+        db = os.path.join(HERMES_HOME, "state.db")
+        c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        best = 0
+        for (ej,) in c.execute("SELECT entry_json FROM gateway_routing "
+                               "ORDER BY updated_at DESC LIMIT 25"):
+            try:
+                best = max(best, int(json.loads(ej).get("last_prompt_tokens") or 0))
+            except (TypeError, ValueError):
+                continue
+        c.close()
+        info["ctx"] = best
+    except Exception:
+        info["ctx"] = None
+    return info
 
 
 def _one_feed(name, url, limit=12):
@@ -189,6 +231,102 @@ def cortex():
         "settings": sum(1 for h in profiles
                         if os.path.isfile(os.path.join(h, "config.yaml"))),
     }
+
+
+CAM_PROCS = []          # live ffmpeg camera processes, so a tab close can reap them
+CAM_DEV = "/dev/video0"
+
+
+def _cam_kill_all():
+    for p in list(CAM_PROCS):
+        try:
+            p.kill()
+        except OSError:
+            pass
+    CAM_PROCS.clear()
+
+
+def camera_stream(handler, dev=None, size="320x240", fps=5):
+    """multipart/x-mixed-replace MJPEG straight from the webcam, for an <img>.
+
+    Verified before building: /dev/video0 is a Microdia Integrated_Webcam_HD,
+    ffmpeg captures it directly at 320x240/5fps for ~9% CPU and ~308 KB/s.
+
+    Started only on request and reaped when the client goes away, so the camera is
+    not left running with the UI closed. Bound by the bridge, which is
+    localhost-only - the same control every other Helix endpoint relies on.
+    """
+    dev = dev or CAM_DEV
+    if not os.path.exists(dev):
+        return handler.send_error(404, f"no camera at {dev}")
+    # One stream at a time. Three concurrent /cam requests had three ffmpeg
+    # processes all holding /dev/video0, and a fourth client then got zero bytes
+    # back - the camera was contended, not broken.
+    _cam_kill_all()
+    try:
+        proc = subprocess.Popen(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error",
+             "-f", "v4l2", "-video_size", size, "-framerate", str(fps),
+             "-i", dev, "-f", "mpjpeg", "-q:v", "6", "-"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+    except FileNotFoundError:
+        return handler.send_error(500, "ffmpeg not installed")
+    CAM_PROCS.append(proc)
+    # HTTP/1.0 framing on purpose. Under HTTP/1.1 an endless body with no
+    # Content-Length is sent as `transfer-encoding: chunked`, and browsers cannot
+    # decode a chunked multipart image stream - the request came back 200 with
+    # the right content-type and still failed to produce a frame. Delimiting the
+    # body by connection close is what multipart/x-mixed-replace expects.
+    handler.protocol_version = "HTTP/1.0"
+    handler.send_response(200)
+    handler.send_header("Content-Type", "multipart/x-mixed-replace; boundary=FRAME")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Connection", "close")
+    handler.end_headers()
+    # ffmpeg's mpjpeg output is a raw concatenation of whole JPEGs, so the
+    # frames have to be found by their SOI/EOI markers. My first version read
+    # fixed 4096-byte chunks and declared each one a frame: every part was a
+    # fragment, there were 0 complete JPEGs in a 760KB capture, and the browser
+    # correctly refused to decode it. curl "worked" only because it dumps bytes.
+    SOI, EOI = b"\xff\xd8", b"\xff\xd9"
+    buf = b""
+    try:
+        while True:
+            chunk = proc.stdout.read(8192)
+            if not chunk:
+                break
+            buf += chunk
+            # cut off anything before a start-of-frame marker
+            i = buf.find(SOI)
+            if i > 0:
+                buf = buf[i:]
+            elif i < 0:
+                buf = buf[-1:]          # keep 1 byte: a marker may straddle reads
+                continue
+            # emit every complete frame currently buffered
+            while True:
+                j = buf.find(EOI, 2)
+                if j < 0:
+                    break
+                frame, buf = buf[:j + 2], buf[j + 2:]
+                handler.wfile.write(b"--FRAME\r\n")
+                handler.wfile.write(b"Content-Type: image/jpeg\r\nContent-Length: "
+                                    + str(len(frame)).encode() + b"\r\n\r\n")
+                handler.wfile.write(frame)
+                handler.wfile.write(b"\r\n")
+            # never let a stalled frame grow without bound
+            if len(buf) > 4 << 20:
+                buf = buf[-2:]
+    except (BrokenPipeError, ConnectionResetError):
+        pass          # the browser tab closed; that is the normal way this ends
+    finally:
+        try:
+            proc.kill()
+            proc.wait(timeout=3)
+        except Exception:
+            pass
+        if proc in CAM_PROCS:
+            CAM_PROCS.remove(proc)
 
 
 def activity(limit=40):
@@ -611,6 +749,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(cortex())
         if path == "/activity":
             return self._send_json(activity())
+        if path == "/cam":
+            return camera_stream(self)
+        if path == "/cam/stop":
+            _cam_kill_all()
+            return self._send_json({"ok": True, "stopped": True})
         if path == "/events":
             return self._sse()
         self.send_error(404)

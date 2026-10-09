@@ -100,8 +100,8 @@ main{
 
 /* ── left rail ─────────────────────────────────────────── */
 #left{display:flex;flex-direction:column;gap:8px;min-height:0}
-#globePanel{flex:1 1 0;min-height:104px}
-#hlPanel{flex:0 1 auto;min-height:96px;max-height:34vh}
+#globePanel{flex:1 1 0;min-height:78px}
+#hlPanel{flex:0 1 auto;min-height:70px;max-height:32vh}
 #headlines{overflow:auto;padding:4px 10px 8px;flex:1 1 auto}
 #headlines .it{display:flex;gap:8px;padding:5px 0;border-bottom:1px solid #101923}
 #globeTools button{
@@ -116,6 +116,19 @@ main{
   background:#0b141ccc;border:1px solid var(--line);color:var(--dim);backdrop-filter:blur(6px)
 }
 #mapModes button[aria-selected=true]{border-color:var(--cy);color:var(--cy)}
+/* Fixed height, not flex-grown: .panel .pb carries flex:1;min-height:0, so a
+   camera panel left to flex collapsed to its 33px header and showed nothing. */
+#camPanel{flex:0 1 145px;min-height:96px}
+#camPanel .pb{flex:1 1 auto;min-height:0;background:#05080c}
+#camFeed{width:100%;height:100%;object-fit:cover;display:block;image-rendering:auto}
+#camOff,#camErr{position:absolute;inset:0;display:grid;place-content:center;
+  color:var(--dim);font-size:9.5px;letter-spacing:.16em;text-align:center;padding:8px}
+/* An author `display` rule beats the UA stylesheet's [hidden]{display:none}, so
+   the overlay stayed painted on top of the live feed. Re-assert it. */
+#camOff[hidden],#camErr[hidden]{display:none}
+#camErr{color:var(--rd);letter-spacing:0;font-size:10px}
+#camPanel button{text-transform:uppercase}
+#camPanel button.on{border-color:var(--rd);color:var(--rd)}
 #globe{position:absolute;inset:0;border:0;width:100%;height:100%;background:#000}
 #globeTools{
   position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:5px;z-index:3
@@ -215,6 +228,18 @@ main{
 
   <!-- LEFT RAIL -->
   <div id="left">
+    <section class="panel" id="camPanel">
+      <div class="ph"><span class="tag">◉</span> Media Link
+        <span id="camState" style="margin-left:auto;text-transform:none;letter-spacing:0">offline</span>
+        <button id="camToggle" style="margin-left:8px;padding:2px 8px;border-radius:4px;cursor:pointer;
+          background:#0b141c;border:1px solid var(--line);color:var(--dim);font-size:9px;letter-spacing:.12em">START</button>
+      </div>
+      <div class="pb">
+        <img id="camFeed" alt="" hidden>
+        <div id="camOff"><span>CAMERA OFF</span></div>
+        <div id="camErr" hidden></div>
+      </div>
+    </section>
     <section class="panel" id="globePanel">
       <div class="ph"><span class="tag">◉</span> Sat-Link Feed <span style="margin-left:auto;text-transform:none;letter-spacing:0" id="globeSrc"></span></div>
       <div class="pb">
@@ -333,6 +358,17 @@ async function state(){
     $("#sAgents").textContent = ps.length + " agents";
     $("#sBusy").textContent = busy;
     $("#sSeats").textContent = SEAT;
+    // model + context: real numbers from the bridge, never a placeholder.
+    if (d.model) $("#sModel").textContent = d.model.replace(":free", "");
+    const ctx = d.ctx;
+    if (typeof ctx === "number" && ctx > 0) {
+      $("#sCtxN").textContent = ctx.toLocaleString();
+      const pct = Math.min(100, ctx / (d.ctx_max || 200000) * 100);
+      $("#sCtx").style.width = pct.toFixed(1) + "%";
+    } else {
+      $("#sCtxN").textContent = "n/a";   // unknown, never a fabricated 0
+      $("#sCtx").style.width = "0%";
+    }
     const anyW = busy > 0;
     $("#orbDot").className = "dot " + (anyW ? "warn" : "on");
     $("#orbTxt").textContent = anyW ? `${busy} WORKING` : "IDLE";
@@ -377,6 +413,47 @@ function wireEvents(){
     }
   };
 }
+
+/* ── MEDIA LINK: the real webcam, as an MJPEG <img> ─────────────────────
+   Starts ONLY when the human presses START. The camera is not left running
+   because a tab was once open: the panel calls /cam/stop when toggled off,
+   and the bridge reaps ffmpeg when the client disconnects (measured: 0
+   orphans after a client vanished mid-stream). */
+let camOn = false;
+function camStart(){
+  const img = $("#camFeed");
+  camOn = true;
+  $("#camToggle").textContent = "STOP";
+  $("#camToggle").classList.add("on");
+  $("#camState").textContent = "connecting…";
+  $("#camErr").hidden = true;
+  $("#camOff").hidden = true;
+  img.hidden = false;
+  // Confirm by the frame actually arriving, not by the request having been made.
+  // An <img> fed by multipart/x-mixed-replace fires load once the first frame
+  // is decoded, so this is real evidence rather than a hopeful status line.
+  img.onload = () => { $("#camState").textContent = "online"; };
+  img.onerror = () => {
+    $("#camState").textContent = "offline";
+    $("#camErr").hidden = false;
+    $("#camErr").textContent = "Camera unavailable — /dev/video0 could not be opened.";
+    camStop();
+  };
+  img.src = "/cam?cb=" + Date.now();
+}
+function camStop(){
+  const img = $("#camFeed");
+  img.onload = null; img.onerror = null;
+  img.removeAttribute("src");     // closes the socket -> bridge reaps ffmpeg
+  img.hidden = true;
+  $("#camOff").hidden = false;
+  camOn = false;
+  $("#camToggle").textContent = "START";
+  $("#camToggle").classList.remove("on");
+  $("#camState").textContent = "offline";
+  fetch("/cam/stop").catch(()=>{});
+}
+$("#camToggle").onclick = () => camOn ? camStop() : camStart();
 
 /* ── real tool calls, from state.db via /activity ────────────────────── */
 let actMode = "voice";

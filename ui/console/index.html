@@ -38,10 +38,16 @@ body{
 .dot.warn{background:var(--am)}.dot.err{background:var(--rd)}
 
 /* ── grid ──────────────────────────────────────────────── */
+/* Proportions measured off the reference screenshot rather than eyeballed:
+     left 310/1500 = 20.7% | centre 670/1500 = 44.7% | right 465/1500 = 31.0%
+   Mine were 22.4 / 51.5 / 25.4, so the chat column was 5.6 points too narrow
+   and the centre 6.8 points too wide. fr units (not %) so the 8px gaps are
+   absorbed proportionally instead of eating into the last column. */
 main{
-  flex:1;min-height:0;display:grid;gap:8px;padding:8px;
-  grid-template-columns:minmax(300px,21%) minmax(0,1fr) minmax(320px,25%);
-  grid-template-rows:auto minmax(0,1fr);
+  flex:1;min-height:0;display:grid;gap:8px;padding:12px 20px;
+  grid-template-columns:minmax(250px,20.7fr) minmax(0,44.7fr) minmax(330px,31fr);
+  /* voice core 273/733 = 37%, agent town 430/733 = 59% of the centre column */
+  grid-template-rows:36% minmax(0,1fr);
   grid-template-areas:"core core console" "left town console";
 }
 #core{grid-area:core} #left{grid-area:left}
@@ -104,21 +110,19 @@ main{
    ~640px and this gets ~380px, which is where its own HUD becomes readable.
    The mins are set so a SHORT window degrades instead of overflowing - three
    stacked panels need ~340px and the harness viewport is only 554px tall. */
-#globePanel{flex:1 1 auto;min-height:64px}
-#hlPanel{flex:0 1 auto;min-height:56px;max-height:32vh}
+#globePanel{flex:1 1 auto;min-height:150px}
+#hlPanel{flex:0 0 23%;min-height:64px;max-height:none}
 
 /* Enough vertical room: give the globe real space instead of a cramped strip. */
-@media (min-height:700px){
-  #camPanel{flex:0 0 168px}
-  #globePanel{min-height:200px}
-  #hlPanel{min-height:96px}
+@media (min-height:820px){
+  #globePanel{min-height:260px}
 }
 /* Very short windows: the headlines list is the least useful of the three, so it
    gives up its space first rather than pushing the others off-screen. */
 @media (max-height:620px){
-  #hlPanel{min-height:44px;max-height:22vh}
-  #camPanel{min-height:80px}
-  #globePanel{min-height:56px}
+  #hlPanel{min-height:52px}
+  #camPanel{min-height:70px}
+  #globePanel{min-height:110px}
 }
 #headlines{overflow:auto;padding:4px 10px 8px;flex:1 1 auto}
 #headlines .it{display:flex;gap:8px;padding:5px 0;border-bottom:1px solid #101923}
@@ -136,7 +140,10 @@ main{
 #mapModes button[aria-selected=true]{border-color:var(--cy);color:var(--cy)}
 /* Fixed height, not flex-grown: .panel .pb carries flex:1;min-height:0, so a
    camera panel left to flex collapsed to its 33px header and showed nothing. */
-#camPanel{flex:0 1 150px;min-height:88px}
+/* Reference rail split, measured: camera 136/733 = 17%, globe 415/733 = 57%,
+   headlines 165/733 = 23%. The globe was getting 11% of the rail, which is why
+   its own HUD was unreadable - it was never given room. */
+#camPanel{flex:0 0 17%;min-height:76px}
 #camPanel .pb{flex:1 1 auto;min-height:0;background:#05080c}
 #camFeed{width:100%;height:100%;object-fit:cover;display:block;image-rendering:auto}
 #camOff,#camErr{position:absolute;inset:0;display:grid;place-content:center;

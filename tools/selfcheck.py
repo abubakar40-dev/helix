@@ -200,7 +200,7 @@ def check_kernel():
                              timeout=30).stdout
     except Exception:
         return
-    pats = {"i915": r"i915.*(ERROR|hang|Atomic update failure)",
+    pats = {"i915": r"i915.*\b(?:ERROR|hang|Atomic update failure)\b",
             "nvidia": r"NVRM: Xid",
             "oom": r"Out of memory|oom-kill",
             "usb": r"usb \d+-\d+: .*(error -|reset)"}

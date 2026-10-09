@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HELIX</title>
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
+</script>
+<style>
+:root{
+  --bg:#05080d; --panel:#0a1017; --panel2:#0d151e; --line:#16222e;
+  --ink:#c9d6e2; --dim:#5c6b7a; --hi:#e8f2fb;
+  --cy:#22d3ee; --am:#f59e0b; --gr:#22c55e; --rd:#ef4444; --vi:#a78bfa;
+  --r:10px;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  background:var(--bg); color:var(--ink); overflow:hidden;
+  font:12px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  display:flex; flex-direction:column;
+  -webkit-font-smoothing:antialiased;
+}
+/* ── title bar ─────────────────────────────────────────── */
+#top{
+  height:38px;flex:0 0 38px;display:flex;align-items:center;gap:12px;
+  padding:0 12px;border-bottom:1px solid var(--line);background:#070c12;
+}
+#brand{font-weight:700;letter-spacing:.14em;color:var(--hi)}
+#brand b{color:var(--cy)}
+.ver{margin-left:auto;color:var(--dim);font-size:11px;display:flex;gap:14px;align-items:center}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--dim);display:inline-block}
+.dot.on{background:var(--gr);box-shadow:0 0 8px var(--gr)}
+.dot.warn{background:var(--am)}.dot.err{background:var(--rd)}
+
+/* ── grid ──────────────────────────────────────────────── */
+main{
+  flex:1;min-height:0;display:grid;gap:8px;padding:8px;
+  grid-template-columns:minmax(300px,21%) minmax(0,1fr) minmax(320px,25%);
+  grid-template-rows:auto minmax(0,1fr);
+  grid-template-areas:"core core console" "left town console";
+}
+#core{grid-area:core} #left{grid-area:left}
+#town{grid-area:town} #console{grid-area:console}
+
+.panel{
+  background:linear-gradient(180deg,var(--panel2),var(--panel));
+  border:1px solid var(--line);border-radius:var(--r);
+  display:flex;flex-direction:column;min-height:0;overflow:hidden;
+  box-shadow:0 1px 0 #ffffff08 inset, 0 8px 24px #0008;
+}
+.ph{
+  flex:0 0 auto;display:flex;align-items:center;gap:8px;
+  padding:7px 10px;border-bottom:1px solid var(--line);
+  font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
+}
+.ph .tag{color:var(--cy)}
+.pb{flex:1;min-height:0;position:relative}
+
+/* ── voice core ────────────────────────────────────────── */
+#core .pb{display:flex;align-items:center;gap:18px;padding:10px 16px}
+#nodes{display:flex;flex-direction:column;gap:9px;width:210px;flex:0 0 auto}
+.node{
+  display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;
+  background:#0c141c;border:1px solid var(--nc,var(--line));
+  box-shadow:0 0 14px -6px var(--nc);position:relative;
+}
+.node .ic{width:20px;height:20px;display:grid;place-items:center;border-radius:5px;
+  background:#0006;border:1px solid var(--nc);color:var(--nc);font-size:11px}
+.node .lb{flex:1;letter-spacing:.14em;font-size:10.5px;color:var(--hi)}
+.node .ct{font-variant-numeric:tabular-nums;color:var(--nc);font-weight:700;font-size:13px}
+.node .pip{position:absolute;right:-3px;top:50%;width:6px;height:6px;margin-top:-3px;
+  border-radius:50%;background:var(--nc);box-shadow:0 0 8px var(--nc)}
+#links{position:absolute;inset:0;pointer-events:none}
+#orbwrap{
+  flex:1;min-width:0;height:172px;border-radius:var(--r);position:relative;overflow:hidden;
+  background:radial-gradient(120% 120% at 50% 40%,#121b26 0%,#070c12 70%);
+  border:1px solid var(--line);
+}
+#orb{position:absolute;inset:0}
+#orbstate{
+  position:absolute;top:9px;left:9px;display:flex;align-items:center;gap:6px;
+  padding:3px 9px;border-radius:99px;background:#000a;border:1px solid var(--line);
+  font-size:10px;letter-spacing:.16em;color:var(--dim)
+}
+#orbstate .dot{width:6px;height:6px}
+#startbtn{
+  position:absolute;left:50%;bottom:12px;transform:translateX(-50%);
+  padding:7px 30px;border-radius:6px;cursor:pointer;
+  background:#0b1a22;border:1px solid var(--cy);color:var(--cy);
+  font:600 10.5px/1 inherit;letter-spacing:.22em;
+  box-shadow:0 0 18px -6px var(--cy);transition:.15s;
+}
+#startbtn:hover{background:#0e2632;box-shadow:0 0 22px -4px var(--cy)}
+#startbtn.stop{border-color:var(--rd);color:var(--rd);box-shadow:0 0 18px -6px var(--rd)}
+
+/* ── left rail ─────────────────────────────────────────── */
+#left{display:flex;flex-direction:column;gap:8px;min-height:0}
+#globePanel{flex:1 1 0;min-height:104px}
+#hlPanel{flex:0 1 auto;min-height:96px;max-height:34vh}
+#headlines{overflow:auto;padding:4px 10px 8px;flex:1 1 auto}
+#headlines .it{display:flex;gap:8px;padding:5px 0;border-bottom:1px solid #101923}
+#globeTools button{
+  width:26px;height:26px;border-radius:6px;cursor:pointer;
+  background:#0b141ccc;border:1px solid var(--line);color:var(--ink);font-size:13px;
+  backdrop-filter:blur(6px);
+}
+#globeTools button:hover{border-color:var(--cy);color:var(--cy)}
+#mapModes{position:absolute;left:8px;top:44px;display:flex;gap:4px;z-index:3}
+#mapModes button{
+  padding:3px 9px;border-radius:5px;cursor:pointer;font-size:9.5px;letter-spacing:.12em;
+  background:#0b141ccc;border:1px solid var(--line);color:var(--dim);backdrop-filter:blur(6px)
+}
+#mapModes button[aria-selected=true]{border-color:var(--cy);color:var(--cy)}
+#globe{position:absolute;inset:0;border:0;width:100%;height:100%;background:#000}
+#globeTools{
+  position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:5px;z-index:3
+}
+#headlines a{color:var(--ink);text-decoration:none;line-height:1.35}
+#headlines a:hover{color:var(--cy)}
+#headlines .src{color:var(--dim);font-size:10px}
+
+/* ── agent town ────────────────────────────────────────── */
+#townhead{display:flex;align-items:center;gap:6px;margin-left:auto}
+.tab{
+  padding:3px 10px;border-radius:5px;cursor:pointer;font-size:10px;letter-spacing:.1em;
+  background:transparent;border:1px solid transparent;color:var(--dim)
+}
+.tab[aria-selected=true]{background:#13202c;border-color:var(--cy);color:var(--cy)}
+#townbody{position:absolute;inset:0;overflow:hidden;background:#080d13}
+#desks{position:absolute;inset:0}
+
+/* ── console (right) ───────────────────────────────────── */
+#tabs{display:flex;gap:2px;margin-left:6px}
+#stream{overflow:auto;padding:8px 10px;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+.ev{border-left:2px solid var(--line);padding:3px 0 3px 8px;margin-bottom:5px}
+.ev .hd{display:flex;gap:7px;color:var(--dim);font-size:10px}
+.ev .hd b{color:var(--ink);font-weight:600}
+.ev .bd{color:var(--ink);word-break:break-word;white-space:pre-wrap}
+.ev.ok{border-left-color:var(--gr)} .ev.bad{border-left-color:var(--rd)}
+.ev.work{border-left-color:var(--am)} .ev.info{border-left-color:var(--cy)}
+
+/* ── status bar ────────────────────────────────────────── */
+#status{
+  flex:0 0 26px;display:flex;align-items:center;gap:16px;padding:0 12px;
+  border-top:1px solid var(--line);background:#070c12;color:var(--dim);font-size:10.5px
+}
+#status b{color:var(--ink);font-weight:600}
+.meter{width:88px;height:5px;border-radius:99px;background:#131c26;overflow:hidden}
+.meter i{display:block;height:100%;background:linear-gradient(90deg,var(--cy),var(--gr))}
+#chat{
+  position:absolute;right:10px;bottom:10px;display:flex;gap:6px;z-index:4
+}
+#chat button{
+  padding:5px 12px;border-radius:6px;cursor:pointer;font-size:10px;letter-spacing:.14em;
+  background:#0b141ccc;border:1px solid var(--line);color:var(--ink);backdrop-filter:blur(6px)
+}
+#chat button:hover{border-color:var(--cy);color:var(--cy)}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:#1b2836;border-radius:9px}
+</style>
+</head>
+<body>
+
+<div id="top">
+  <span id="brand">HEL<b>I</b>X</span>
+  <span class="ver">
+    <span><span class="dot" id="vDot"></span> <span id="vTxt">connecting</span></span>
+    <span id="vModel">—</span>
+  </span>
+</div>
+
+<main>
+  <!-- VOICE CORE -->
+  <section class="panel" id="core">
+    <div class="ph"><span class="tag">◉</span> Voice Core <span id="coreState" style="margin-left:auto;text-transform:none;letter-spacing:0"></span></div>
+    <div class="pb">
+      <svg id="links"></svg>
+      <div id="nodes">
+        <div class="node" data-k="memory" style="--nc:var(--cy)"><span class="ic">◉</span><span class="lb">MEMORY</span><span class="ct" id="c-memory">–</span><span class="pip"></span></div>
+        <div class="node" data-k="skills" style="--nc:var(--am)"><span class="ic">▦</span><span class="lb">SKILLS</span><span class="ct" id="c-skills">–</span><span class="pip"></span></div>
+        <div class="node" data-k="soul"   style="--nc:var(--gr)"><span class="ic">▣</span><span class="lb">SOUL</span><span class="ct" id="c-soul">–</span><span class="pip"></span></div>
+        <div class="node" data-k="settings" style="--nc:#7d8b99"><span class="ic">⚙</span><span class="lb">SETTING</span><span class="ct" id="c-settings">–</span><span class="pip"></span></div>
+      </div>
+      <div id="orbwrap">
+        <div id="orb"></div>
+        <div id="orbstate"><span class="dot" id="orbDot"></span><span id="orbTxt">IDLE</span></div>
+        <button id="startbtn">START HELIX</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- LEFT RAIL -->
+  <div id="left">
+    <section class="panel" id="globePanel">
+      <div class="ph"><span class="tag">◉</span> Sat-Link Feed <span style="margin-left:auto;text-transform:none;letter-spacing:0" id="globeSrc"></span></div>
+      <div class="pb">
+        <iframe id="globe" src="http://127.0.0.1:4173/?cb=2&welcome=0" title="globe"></iframe>
+        <div id="mapModes">
+          <button data-m="3d" aria-selected="true">3D</button>
+          <button data-m="2d" aria-selected="false">2D MAP</button>
+        </div>
+        <div id="globeTools">
+          <button id="gZoom" title="zoom in">+</button>
+          <button id="gOut" title="zoom out">−</button>
+        </div>
+      </div>
+    </section>
+    <section class="panel" id="hlPanel">
+      <div class="ph"><span class="tag">◉</span> Today Headlines <span style="margin-left:auto" id="hlCount"></span></div>
+      <div id="headlines"></div>
+    </section>
+  </div>
+
+  <!-- AGENT TOWN -->
+  <section class="panel" id="town">
+    <div class="ph">
+      <span class="tag">◉</span> Agent Town
+      <div id="townhead">
+        <button class="tab" data-t="agents" aria-selected="true">agents</button>
+        <button class="tab" data-t="visual" aria-selected="false">visual hub</button>
+        <button class="tab" data-t="gesture" aria-selected="false">gesture</button>
+      </div>
+    </div>
+    <div class="pb">
+      <div id="townbody"><div id="desks"></div></div>
+      <div id="chat">
+        <button id="chatBtn">CHAT</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- CONSOLE -->
+  <section class="panel" id="console">
+    <div class="ph">
+      <span class="tag">◉</span> Console
+      <div id="tabs">
+        <button class="tab" data-c="voice" aria-selected="true">VOICE</button>
+        <button class="tab" data-c="agent" aria-selected="false">AGENT</button>
+        <button class="tab" data-c="notes" aria-selected="false">NOTES</button>
+      </div>
+    </div>
+    <div class="pb"><div id="stream"></div></div>
+  </section>
+</main>
+
+<div id="status">
+  <span><span class="dot" id="sDot"></span> <b id="sOnline">offline</b></span>
+  <span>model <b id="sModel">—</b></span>
+  <span>CTX <span class="meter"><i id="sCtx" style="width:0%"></i></span> <b id="sCtxN">0</b></span>
+  <span><b id="sBusy">0</b>/<b id="sSeats">0</b> busy</span>
+  <span style="margin-left:auto" id="sAgents">–</span>
+</div>
+
+<script type="module">
+import { createOrbScene } from "./orbScene.js";
+
+const $ = s => document.querySelector(s);
+const log = (txt, cls="info") => {
+  const d = document.createElement("div");
+  d.className = "ev " + cls;
+  d.innerHTML = `<div class="hd"><b>${new Date().toTimeString().slice(0,8)}</b><span>${txt}</span></div>`;
+  const s = $("#stream"); s.prepend(d);
+  while (s.children.length > 120) s.lastChild.remove();
+};
+
+/* ── orb ───────────────────────────────────────────────── */
+let orb = null;
+try { orb = createOrbScene($("#orb")); log("orb ready","ok"); }
+catch(e){ log("orb failed: "+e.message,"bad"); $("#orb").innerHTML =
+  `<div style="padding:20px;color:var(--rd)">Three.js could not start: ${e.message}</div>`; }
+
+/* node links, redrawn on resize like voice-core does */
+const NODES = ["memory","skills","soul","settings"];
+function drawLinks(){
+  const w = $("#links").clientWidth, h = $("#links").clientHeight;
+  const svg = $("#links"); svg.setAttribute("viewBox",`0 0 ${w} ${h}`);
+  const cx = $("#orbwrap").offsetLeft + $("#orbwrap").offsetWidth/2;
+  const cy = $("#orbwrap").offsetTop + $("#orbwrap").offsetHeight/2;
+  const COL = {memory:"#22d3ee",skills:"#f59e0b",soul:"#22c55e",settings:"#7d8b99"};
+  svg.innerHTML = NODES.map(k=>{
+    const n = document.querySelector(`.node[data-k=${k}]`);
+    const x = n.offsetLeft + n.offsetWidth + 3, y = n.offsetTop + n.offsetHeight/2;
+    const mx = x + (cx-x)*0.55;
+    return `<path d="M${x},${y} L${mx},${y} L${cx},${cy}" fill="none"
+      stroke="${COL[k]}" stroke-width="1.5" opacity=".75"/>
+      <circle cx="${x}" cy="${y}" r="2.5" fill="${COL[k]}"/>`;
+  }).join("");
+}
+addEventListener("resize",drawLinks);
+setTimeout(drawLinks,60);
+
+/* ── cortex counts ─────────────────────────────────────── */
+async function cortex(){
+  try{
+    const r = await fetch("/cortex"), d = await r.json();
+    for (const k of NODES) $("#c-"+k).textContent = d[k] ?? 0;
+  }catch(e){ log("cortex: "+e.message,"bad"); }
+}
+
+/* ── state (live, real kanban) ─────────────────────────── */
+let SEAT = 4;
+async function state(){
+  try{
+    const r = await fetch("/state"), d = await r.json();
+    const ps = d.profiles || [];
+    SEAT = Math.min(SEAT || 4, 9);
+    const busy = ps.filter(p=>p.status==="working").length;
+    $("#sAgents").textContent = ps.length + " agents";
+    $("#sBusy").textContent = busy;
+    $("#sSeats").textContent = SEAT;
+    const anyW = busy > 0;
+    $("#orbDot").className = "dot " + (anyW ? "warn" : "on");
+    $("#orbTxt").textContent = anyW ? `${busy} WORKING` : "IDLE";
+    $("#coreState").textContent = ps.length + " agents · " + busy + " working";
+    drawDesks(ps);
+  }catch(e){ $("#vDot").className="dot err"; $("#vTxt").textContent="bridge down"; }
+}
+
+/* ── agent town (phase 1: live desks; pixel avatars next) ── */
+function drawDesks(ps){
+  const wrap = $("#desks");
+  wrap.innerHTML = ps.map((p,i)=>{
+    const col = p.status==="working" ? "var(--am)" : p.status==="blocked" ? "var(--rd)" : "#2a3a49";
+    return `<div style="position:absolute;left:${6+(i%3)*31}%;top:${8+Math.floor(i/3)*30}%;
+      width:26%;padding:6px 8px;border-radius:7px;background:#0b131b;border:1px solid ${col}55">
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="width:6px;height:6px;border-radius:50%;background:${col};box-shadow:0 0 7px ${col}"></span>
+        <b style="font-size:10.5px;color:var(--hi)">${p.name}</b>
+        <span style="margin-left:auto;font-size:9px;color:var(--dim);text-transform:uppercase">${p.status}</span>
+      </div>
+      <div style="font-size:9.5px;color:var(--dim);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        ${p.task ? (p.task.title||p.task) : p.role}</div>
+    </div>`;
+  }).join("");
+}
+
+/* ── live event stream ─────────────────────────────────── */
+const seen = new Set();
+function wireEvents(){
+  const es = new EventSource("/events");
+  es.onopen = ()=>{ $("#vDot").className="dot on"; $("#vTxt").textContent="live";
+                     $("#sDot").className="dot on"; $("#sOnline").textContent="online"; };
+  es.onerror = ()=>{ $("#vDot").className="dot warn"; $("#vTxt").textContent="reconnecting";
+                     $("#sDot").className="dot warn"; $("#sOnline").textContent="reconnecting"; };
+  es.onmessage = ev=>{
+    let d; try{ d = JSON.parse(ev.data); }catch{ return; }
+    const list = d.events || [];
+    for (const e of list.slice(-6)){
+      const id = e.id || JSON.stringify(e);
+      if (seen.has(id)) continue; seen.add(id);
+      const t = e.type || e.kind || "event";
+      log(`${t} ${e.task||e.assignee||""}`.trim(),
+          t==="completed"?"ok": t==="failed"?"bad": t==="claimed"||t==="spawned"?"work":"info");
+    }
+  };
+}
+
+/* ── headlines ─────────────────────────────────────────── */
+async function headlines(){
+  try{
+    const r = await fetch("/headlines"), d = await r.json();
+    // Real shape is {ts, feeds:[{source, error, items:[{title,link,date}]}], total}
+    // - items are nested per feed, there is no top-level items array. My first
+    // parser looked for d.items and rendered 0 stories against a 200 response.
+    const items = (d.feeds||[]).flatMap(f => (f.items||[]).map(s => Object.assign({}, s, {source: f.source})));
+    $("#hlCount").textContent = items.length + " stories";
+    $("#headlines").innerHTML = items.slice(0,16).map((s,i)=>
+      `<div class="it"><span class="n">${String(i+1).padStart(2,"0")}</span>
+        <div><a href="${s.link}" target="_blank" rel="noopener">${s.title}</a>
+        <div class="src">${s.source||""}</div></div></div>`).join("");
+  }catch(e){ log("headlines: "+e.message,"bad"); }
+}
+
+/* ── globe 2D/3D, reuse the installed app ──────────────── */
+document.querySelectorAll("#mapModes button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("#mapModes button").forEach(x=>x.setAttribute("aria-selected", x===b));
+  const q = b.dataset.m==="2d" ? "pitch=-90&heading=0&map=esri-imagery" : "";
+  $("#globe").src = `http://127.0.0.1:4173/?cb=2&welcome=0${q?"&"+q:""}`;
+});
+
+/* ── tabs (visual hub / gesture are phases 2+, honest here) ── */
+document.querySelectorAll("#townhead .tab").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("#townhead .tab").forEach(x=>x.setAttribute("aria-selected", x===b));
+  if (b.dataset.t!=="agents"){ log(`${b.dataset.t}: not built yet — honest, not faked`,"info");
+    $("#desks").innerHTML = `<div style="padding:24px;color:var(--dim)">
+      <b style="color:var(--ink)">${b.dataset.t}</b> is not implemented yet.<br><br>
+      This panel shows a placeholder rather than a mock pretending to be live data.</div>`; }
+  else state();
+});
+document.querySelectorAll("#tabs .tab").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("#tabs .tab").forEach(x=>x.setAttribute("aria-selected", x===b));
+  if (b.dataset.c!=="voice"){ log(`${b.dataset.c} view not built yet — honest, not faked`,"info"); }
+});
+$("#chatBtn").onclick = ()=> log("text chat not built yet — voice/whatsapp are the live channels","info");
+
+/* start/stop is honest: it reports what it actually does */
+$("#startbtn").onclick = ()=>{
+  const on = $("#startbtn").classList.toggle("stop");
+  $("#startbtn").textContent = on ? "STOP HELIX" : "START HELIX";
+  $("#orbTxt").textContent = on ? "LISTENING" : "IDLE";
+  log(on ? "session requested — voice core runs at /voice-core/" : "session released","info");
+};
+
+cortex(); state(); headlines(); wireEvents();
+setInterval(state, 4000);
+setInterval(cortex, 15000);
+setInterval(headlines, 300000);
+log("console booted","ok");
+</script>
+</body>
+</html>

@@ -36,6 +36,7 @@ PAGES = {
     "/agent-town/": "agent-town/index.html",
     "/world-monitor/": "world-monitor/index.html",
     "/voice-core/": "voice-core/index.html",
+    "/console/": "console/index.html",
 }
 KANBAN_DB = os.path.expanduser("~/.hermes/kanban.db")
 HERMES_HOME = os.path.expanduser("~/.hermes")

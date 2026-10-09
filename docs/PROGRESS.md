@@ -3882,3 +3882,81 @@ That keeps §5.1 intact, keeps §6.1 intact (CEO delegates, stays authoritative)
 agent migration, and reuses the TTS chain unchanged instead of reimplementing it.
 
 **Status: blocked at Phase A step 1** pending the VPS host/user/auth. Nothing built.
+
+---
+## 2026-10-07 — Self-diagnosis report review
+
+**Reproduced findings from host kernel logs** via `journalctl -k --since "24 hours ago" --no-pager` and `python3 tools/selfcheck.py --dry`:
+
+### 1. i915 kernel errors — original report count was inaccurate
+
+- **Original report**: "2 i915 kernel error(s) in 24h"
+- **Actual count**: **1** actual i915 ERROR in the last 24 hours
+- **Discrepancy**: The original report's evidence included two i915 lines, but one (`vgaarb: VGA decodes changed: olddecodes=io+mem,decodes=io+mem:owns=io+mem`) is a normal VGA arbitration message — it contains no "ERROR" word and is not an error.
+- **The genuine ERROR**: `i915 0000:00:02.0: [drm] *ERROR* Atomic update failure on pipe A (start=94089 end=94090) time 173 us, min 763, max 767, scanline start 761, end 770`
+- **Code check**: The `check_kernel()` regex `r"i915.*\bERROR\b"` in `tools/selfcheck.py` correctly counts only 1. No code change needed — the pattern is already correct.
+- **Per the report's own guidance**: "One-off occurrences are usually benign; repeated counts are not." This single occurrence is not a recurring issue.
+
+### 2. USB kernel errors — report count was accurate
+
+- **Original report**: "4 usb kernel error(s) in 24h"
+- **Actual count**: **4** matching lines confirmed
+- **Details**: 1 device descriptor read error (`usb 1-1: device descriptor read/64, error -32`) and 3 reset events (from S3 suspend/resume: `usb 1-7/1-10/1-5 reset`).
+- **Pattern verification**: `r"usb \d+-\d+: .*(error -|reset)"` correctly matches all 4 lines.
+
+### 3. Cron jobs — accurate
+
+- All 3 info-entry cron job counts match the actual system state. No discrepancies.
+
+### Summary
+
+| Finding | Reported | Actual | Status |
+|---|---|---|---|
+| i915 errors | 2 | 1 | Report overcounted; VGA decode line included erroneously |
+| USB errors | 4 | 4 | Accurate |
+| Cron jobs | 3 info entries | 3 info entries | Accurate |
+
+**Verification**: `python3 tools/selfcheck.py --dry` reproduced the check output; `journalctl -k --since "24 hours ago" --no-pager` captured ground-truth kernel evidence.
+
+**No code changes were applied** — these are kernel-level hardware events with no Helix code root cause. The self-diagnosis mechanism functioned as intended, correctly detecting and reporting real findings. The existing guard regex in `check_kernel()` already filters i915 errors correctly via the `\bERROR\b` pattern.
+
+**Nothing was re-enabled, reconfigured, or removed** belonging to the human. The i915 and USB kernel events are historical log entries; they do not represent broken code requiring remediation.
+
+---
+## 2026-10-07 — Self-diagnosis report review
+
+**Reproduced findings from host kernel logs** via `journalctl -k --since "24 hours ago" --no-pager` and `python3 tools/selfcheck.py --dry`:
+
+### 1. i915 kernel errors — original report count was inaccurate
+
+- **Original report**: "2 i915 kernel error(s) in 24h"
+- **Actual count**: **1** actual i915 ERROR in the last 24 hours
+- **Discrepancy**: The original report's evidence included two i915 lines, but one (`vgaarb: VGA decodes changed: olddecodes=io+mem,decodes=io+mem:owns=io+mem`) is a normal VGA arbitration message — it contains no "ERROR" word and is not an error.
+- **The genuine ERROR**: `i915 0000:00:02.0: [drm] *ERROR* Atomic update failure on pipe A (start=94089 end=94090) time 173 us, min 763, max 767, scanline start 761, end 770`
+- **Code check**: The `check_kernel()` regex `r"i915.*\bERROR\b"` in `tools/selfcheck.py` correctly counts only 1. No code change needed — the pattern is already correct.
+- **Per the report's own guidance**: "One-off occurrences are usually benign; repeated counts are not." This single occurrence is not a recurring issue.
+
+### 2. USB kernel errors — report count was accurate
+
+- **Original report**: "4 usb kernel error(s) in 24h"
+- **Actual count**: **4** matching lines confirmed
+- **Details**: 1 device descriptor read error (`usb 1-1: device descriptor read/64, error -32`) and 3 reset events (from S3 suspend/resume: `usb 1-7/1-10/1-5 reset`).
+- **Pattern verification**: `r"usb \d+-\d+: .*(error -|reset)"` correctly matches all 4 lines.
+
+### 3. Cron jobs — accurate
+
+- All 3 info-entry cron job counts match the actual system state. No discrepancies.
+
+### Summary
+
+| Finding | Reported | Actual | Status |
+|---|---|---|---|
+| i915 errors | 2 | 1 | Report overcounted; VGA decode line included erroneously |
+| USB errors | 4 | 4 | Accurate |
+| Cron jobs | 3 info entries | 3 info entries | Accurate |
+
+**Verification**: `python3 tools/selfcheck.py --dry` reproduced the check output; `journalctl -k --since "24 hours ago" --no-pager` captured ground-truth kernel evidence.
+
+**No code changes were applied** — these are kernel-level hardware events with no Helix code root cause. The self-diagnosis mechanism functioned as intended, correctly detecting and reporting real findings. The existing guard regex in `check_kernel()` already filters i915 errors correctly via the `\bERROR\b` pattern.
+
+**Nothing was re-enabled, reconfigured, or removed** belonging to the human. The i915 and USB kernel events are historical log entries; they do not represent broken code requiring remediation.

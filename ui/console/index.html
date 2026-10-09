@@ -131,8 +131,14 @@ main{
   background:transparent;border:1px solid transparent;color:var(--dim)
 }
 .tab[aria-selected=true]{background:#13202c;border-color:var(--cy);color:var(--cy)}
-#townbody{position:absolute;inset:0;overflow:hidden;background:#080d13}
-#desks{position:absolute;inset:0}
+#townbody{position:absolute;inset:0;overflow:hidden;background:#080d13;
+  display:grid;place-items:center}
+#townCanvas{image-rendering:pixelated;max-width:100%;max-height:100%;
+  width:auto;height:auto}
+#townNote{position:absolute;inset:0;display:grid;place-content:center;gap:6px;
+  text-align:center;color:var(--dim);background:#080d13f2;padding:20px}
+#townNote b{color:var(--hi);font-size:12px;letter-spacing:.1em}
+#townNote span{font-size:10px}
 
 /* ── console (right) ───────────────────────────────────── */
 #tabs{display:flex;gap:2px;margin-left:6px}
@@ -227,7 +233,7 @@ main{
       </div>
     </div>
     <div class="pb">
-      <div id="townbody"><div id="desks"></div></div>
+      <div id="townbody"><canvas id="townCanvas"></canvas><div id="townNote" hidden><b></b><span></span></div></div>
       <div id="chat">
         <button id="chatBtn">CHAT</button>
       </div>
@@ -258,6 +264,7 @@ main{
 
 <script type="module">
 import { createOrbScene } from "./orbScene.js";
+import { createTown } from "./town.js";
 
 const $ = s => document.querySelector(s);
 const log = (txt, cls="info") => {
@@ -321,23 +328,21 @@ async function state(){
   }catch(e){ $("#vDot").className="dot err"; $("#vTxt").textContent="bridge down"; }
 }
 
-/* ── agent town (phase 1: live desks; pixel avatars next) ── */
-function drawDesks(ps){
-  const wrap = $("#desks");
-  wrap.innerHTML = ps.map((p,i)=>{
-    const col = p.status==="working" ? "var(--am)" : p.status==="blocked" ? "var(--rd)" : "#2a3a49";
-    return `<div style="position:absolute;left:${6+(i%3)*31}%;top:${8+Math.floor(i/3)*30}%;
-      width:26%;padding:6px 8px;border-radius:7px;background:#0b131b;border:1px solid ${col}55">
-      <div style="display:flex;align-items:center;gap:6px">
-        <span style="width:6px;height:6px;border-radius:50%;background:${col};box-shadow:0 0 7px ${col}"></span>
-        <b style="font-size:10.5px;color:var(--hi)">${p.name}</b>
-        <span style="margin-left:auto;font-size:9px;color:var(--dim);text-transform:uppercase">${p.status}</span>
-      </div>
-      <div style="font-size:9.5px;color:var(--dim);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-        ${p.task ? (p.task.title||p.task) : p.role}</div>
-    </div>`;
-  }).join("");
+/* ── agent town: pixel sprites driven by REAL /state ───────────────────── */
+let town = null, townBusy = 0;
+try {
+  town = createTown($("#townCanvas"), busy => {
+    townBusy = busy;
+    const s = $("#sBusy"); if (s) s.textContent = busy;
+  });
+  town.start();
+  log("agent town ready","ok");
+} catch(e) {
+  log("agent town failed: "+e.message,"bad");
+  $("#townbody").innerHTML = `<div style="padding:20px;color:var(--rd)">${e.message}</div>`;
 }
+
+function drawDesks(ps){ if (town) town.update(ps); }
 
 /* ── live event stream ─────────────────────────────────── */
 const seen = new Set();
@@ -386,11 +391,19 @@ document.querySelectorAll("#mapModes button").forEach(b=>b.onclick=()=>{
 /* ── tabs (visual hub / gesture are phases 2+, honest here) ── */
 document.querySelectorAll("#townhead .tab").forEach(b=>b.onclick=()=>{
   document.querySelectorAll("#townhead .tab").forEach(x=>x.setAttribute("aria-selected", x===b));
-  if (b.dataset.t!=="agents"){ log(`${b.dataset.t}: not built yet — honest, not faked`,"info");
-    $("#desks").innerHTML = `<div style="padding:24px;color:var(--dim)">
-      <b style="color:var(--ink)">${b.dataset.t}</b> is not implemented yet.<br><br>
-      This panel shows a placeholder rather than a mock pretending to be live data.</div>`; }
-  else state();
+  const note = $("#townNote");
+  if (b.dataset.t!=="agents"){
+    if (town) town.stop();
+    log(`${b.dataset.t}: not built yet — honest, not faked`,"info");
+    note.querySelector("b").textContent = b.dataset.t;
+    note.querySelector("span").textContent =
+      "Not implemented yet. Showing an honest placeholder rather than a mock pretending to be live data.";
+    note.hidden = false;
+  } else {
+    note.hidden = true;
+    if (town) town.start();
+    state();
+  }
 });
 document.querySelectorAll("#tabs .tab").forEach(b=>b.onclick=()=>{
   document.querySelectorAll("#tabs .tab").forEach(x=>x.setAttribute("aria-selected", x===b));

@@ -4048,3 +4048,86 @@ in the reference — that is the next phase, and it is the single biggest remain
 **No visual screenshot**: the harness reports *"needs a visible tab"* and this
 environment has no visible desktop window, so the evidence above is DOM/geometry/network
 level, which is a weaker form of proof than a picture. Flagged rather than glossed.
+
+### UI Phase 2 — pixel-art Agent Town: agents that walk, driven by real kanban state
+
+`ui/console/town.js`, ~215 lines, Canvas 2D. **No new dependency** — it is the third
+WebGL/canvas consumer on a box whose WebGL budget is already documented, so it is plain
+2D on purpose, and it stops its `requestAnimationFrame` loop when the panel is hidden.
+
+Display names are **display-only per §16.1** — the profile ids stay lowercase role names:
+`helix→Helix, research→Alice, pc→Bob, dev→Dave, vision→Claire, comm→Ellen,
+sysmon→Bill, career→Carol, document→Dan`.
+
+Behaviour is bound to real state, not decoration: `working`/`blocked` → walks to its own
+desk and types; `idle` → drifts to the lounge. Desk assignment is stable per profile id, so
+an agent always returns to the same seat.
+
+#### Verified: a REAL task moved a REAL sprite
+
+Poller armed in the page *before* dispatch, sampling canvas pixels + busy count every
+500 ms, then a genuine Kanban task `t_632dbfe1` dispatched to `sysmon`:
+
+```
+00:52:53  busy=0  core=IDLE
+00:53:08  busy=1  core=1 WORKING     <- real task claimed
+00:53:52  busy=0  core=IDLE          <- task done
+```
+
+Correlated against the authoritative `task_events`, as earlier phases did:
+
+| event | DB (UTC) | UI (local, UTC+5) | lag |
+|---|---|---|---|
+| `claimed` | 19:53:06 | 00:53:08 | **+2s** |
+| `completed` | 19:53:51 | 00:53:52 | **+1s** |
+
+Task result checked rather than trusted: run #44, **45s**, summary *"Reported current UTC
+time as requested"*, `result_len: 23`.
+
+Canvas proof it is genuinely drawing rather than existing: **0% black**, **541 distinct
+colours**, and **79 distinct frame hashes across 139 samples** — i.e. it animates.
+
+#### ❌ Four more bugs, all found by measuring rather than by looking
+
+**1. 75% of the canvas was solid black.** I set `canvas.width = VW*SCALE` but never scaled
+the context, so the room painted into the top-left quarter and the rest stayed untouched.
+`ctx.scale(SCALE, SCALE)` fixed it. **A canvas in the DOM with pixels on it looks
+identical to a working one in any DOM dump.**
+
+**2. Duplicate `id="town"`** on both the `<section>` and the `<canvas>`, so
+`querySelector("#town")` returned the section and `getContext is not a function`. Renamed
+to `#townCanvas`, and added a duplicate-id grep to the check.
+
+**3. My own tab handler referenced the element I had just deleted.** Swapping the status
+cards for the canvas left `$("#desks").innerHTML` pointing at nothing — two
+`TypeError: Cannot set properties of null` on click.
+
+**4. And fixing that revealed the real one: switching back to `agents` left the panel
+permanently blank.** The handler used `innerHTML`, which **destroys the canvas element**;
+`town.start()` then animated a detached canvas. Replaced with an overlay note
+(`#townNote`) that is shown and hidden, so the canvas is never destroyed. Verified all
+four states round-trip:
+
+```
+agents       noteHidden=true   size=672x420
+visual hub   noteHidden=false  noteText="visual"   size=672x420
+gesture      noteHidden=false  noteText="gesture"  size=672x420
+back to agents noteHidden=true  size=672x420        <- canvas survived
+console errors: 0
+```
+
+#### Two of my own probes were wrong again, recorded because it keeps happening
+
+- I reported "canvas 300x150, 100% black, module never ran" — the page had not finished
+  loading. Same call minutes later: `672x420`, `blackPct 0`.
+- I reported "clicking visual hub does nothing" — again, the click landed before the
+  module attached its listeners.
+
+**Probing before the page is ready produces findings that are indistinguishable from real
+ones.** Two more entries in a log that already has `t[:4]`, `[^a-zऀ-ۿ]`, the `--json`
+status read, and the `find -maxdepth 3`.
+
+#### Still honestly not built
+`visual hub` and `gesture` are placeholders that say so in the UI. Console AGENT/NOTES
+tabs and CHAT likewise. No text chat yet — voice and WhatsApp remain the live channels.
+No visual screenshot (harness needs a visible tab).

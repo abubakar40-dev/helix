@@ -147,6 +147,19 @@ main{
 .ev .hd{display:flex;gap:7px;color:var(--dim);font-size:10px}
 .ev .hd b{color:var(--ink);font-weight:600}
 .ev .bd{color:var(--ink);word-break:break-word;white-space:pre-wrap}
+.call{margin-bottom:9px;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:#0a121a}
+.call .ch{display:flex;align-items:center;gap:7px;padding:5px 8px;background:#0e1822;
+  border-bottom:1px solid var(--line)}
+.call .ch b{color:var(--cy);font-size:10.5px;font-weight:700}
+.call .ch .pf{color:var(--gr);font-size:9.5px;background:#0d1f18;border:1px solid #1c3a2a;
+  border-radius:99px;padding:1px 6px}
+.call .ch .tm{margin-left:auto;color:var(--dim);font-size:9.5px}
+.blk{padding:5px 8px}
+.blk .lb{color:var(--am);font-size:9px;letter-spacing:.14em;margin-bottom:2px}
+.blk.out .lb{color:var(--vi)}
+.blk pre{margin:0;white-space:pre-wrap;word-break:break-word;color:var(--ink);
+  font:10.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;max-height:150px;overflow:auto}
+.blk.out pre{color:#9fb3c8}
 .ev.ok{border-left-color:var(--gr)} .ev.bad{border-left-color:var(--rd)}
 .ev.work{border-left-color:var(--am)} .ev.info{border-left-color:var(--cy)}
 
@@ -246,7 +259,7 @@ main{
       <span class="tag">◉</span> Console
       <div id="tabs">
         <button class="tab" data-c="voice" aria-selected="true">VOICE</button>
-        <button class="tab" data-c="agent" aria-selected="false">AGENT</button>
+        <button class="tab" data-c="agent" aria-selected="false">AGENT <span id="actCount"></span></button>
         <button class="tab" data-c="notes" aria-selected="false">NOTES</button>
       </div>
     </div>
@@ -365,6 +378,37 @@ function wireEvents(){
   };
 }
 
+/* ── real tool calls, from state.db via /activity ────────────────────── */
+let actMode = "voice";
+const esc = s => String(s??"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const hhmm = ts => { try { return new Date(ts*1000).toTimeString().slice(0,8); } catch { return ""; } };
+
+let _actTimer = 0;
+function startActivityPoll(){
+  clearInterval(_actTimer);
+  // The panel used to render once and then never update, so live agent work was
+  // invisible until you re-selected the tab.
+  _actTimer = setInterval(() => { if (actMode === "agent") activity(); }, 6000);
+}
+
+async function activity(){
+  const el = $("#stream");
+  el.innerHTML = '<div class="ev info"><div class="bd">loading real tool calls…</div></div>';
+  let d;
+  try { d = await (await fetch("/activity")).json(); }
+  catch(e){ el.innerHTML = `<div class="ev bad"><div class="bd">activity: ${esc(e.message)}</div></div>`; return; }
+  const calls = d.calls || [];
+  if (!calls.length){ el.innerHTML = '<div class="ev info"><div class="bd">No tool calls recorded yet.</div></div>'; return; }
+  el.innerHTML = calls.map(c => `
+    <div class="call">
+      <div class="ch"><b>${esc(c.tool)}</b><span class="pf">${esc(c.profile)}</span>
+        <span class="tm">${hhmm(c.ts)}</span></div>
+      <div class="blk"><div class="lb">INPUT</div><pre>${esc(c.args)||"{}"}</pre></div>
+      <div class="blk out"><div class="lb">OUTPUT</div><pre>${esc(c.result)||"(empty)"}</pre></div>
+    </div>`).join("");
+  $("#actCount").textContent = calls.length + " calls";
+}
+
 /* ── headlines ─────────────────────────────────────────── */
 async function headlines(){
   try{
@@ -407,7 +451,14 @@ document.querySelectorAll("#townhead .tab").forEach(b=>b.onclick=()=>{
 });
 document.querySelectorAll("#tabs .tab").forEach(b=>b.onclick=()=>{
   document.querySelectorAll("#tabs .tab").forEach(x=>x.setAttribute("aria-selected", x===b));
-  if (b.dataset.c!=="voice"){ log(`${b.dataset.c} view not built yet — honest, not faked`,"info"); }
+  actMode = b.dataset.c;
+  if (b.dataset.c === "agent"){ activity(); startActivityPoll(); }
+  else {
+    clearInterval(_actTimer);
+    log(b.dataset.c === "voice"
+        ? "switched to the kanban event stream"
+        : "notes view not built yet — honest, not faked", "info");
+  }
 });
 $("#chatBtn").onclick = ()=> log("text chat not built yet — voice/whatsapp are the live channels","info");
 

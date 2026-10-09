@@ -191,6 +191,80 @@ def cortex():
     }
 
 
+def activity(limit=40):
+    """Real tool calls, newest first, for the Console panel.
+
+    Read straight out of state.db: `messages.tool_calls` holds the arguments the
+    agent actually passed, the matching `role='tool'` row holds the result.
+    Nothing here is synthesised - if Hermes did not call a tool, there is nothing
+    to show.
+
+    **Every profile's state.db is read, not just the default one.** Each Hermes
+    profile keeps its own state.db, so reading only `~/.hermes/state.db` showed
+    the CEO's activity and nothing else, all of it labelled `default`. Measured:
+    228 tool rows in the default db against 630 across all nine - the single-db
+    version silently dropped 64% of what the system actually did. The profile
+    directory name is the real profile label; `sessions.profile_name` is
+    `default` in every row and so cannot be used for this.
+    """
+    # The default profile's db sits in ~/.hermes itself; basename would label it
+    # ".hermes", so it is named explicitly as the CEO.
+    dbs = [("helix", os.path.join(HERMES_HOME, "state.db"))]
+    pd = os.path.join(HERMES_HOME, "profiles")
+    if os.path.isdir(pd):
+        dbs += [(p, os.path.join(pd, p, "state.db"))
+                for p in sorted(os.listdir(pd))
+                if os.path.isfile(os.path.join(pd, p, "state.db"))]
+    calls, prof = [], {}
+    for profile, db in dbs:
+        if not os.path.exists(db):
+            continue
+        try:
+            c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        except sqlite3.Error:
+            continue
+        try:
+            for (mid, sid, tcs, ts, model, title) in c.execute(
+                    "SELECT m.id, m.session_id, m.tool_calls, m.timestamp, s.model, s.title "
+                    "FROM messages m LEFT JOIN sessions s ON s.id = m.session_id "
+                    "WHERE m.role='assistant' AND m.tool_calls IS NOT NULL "
+                    "  AND m.tool_calls != '' ORDER BY m.id DESC LIMIT ?", (limit,)).fetchall():
+                try:
+                    parsed = json.loads(tcs)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(parsed, list):
+                    continue
+                for tc in parsed:
+                    cid = tc.get("id") or tc.get("call_id")
+                    fn = (tc.get("function") or {}).get("name") or tc.get("name") or "?"
+                    args = (tc.get("function") or {}).get("arguments", tc.get("arguments", ""))
+                    result = ""
+                    if cid:
+                        r = c.execute("SELECT content FROM messages WHERE tool_call_id=? "
+                                      "AND role='tool' ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
+                        if r:
+                            result = r[0] or ""
+                    prof[profile] = prof.get(profile, 0) + 1
+                    calls.append({
+                        "id": mid, "ts": ts, "profile": profile, "tool": fn,
+                        "args": _short(args, 600), "result": _short(result, 700),
+                        "session": sid, "model": model or "", "title": title or "",
+                    })
+        except sqlite3.Error:
+            continue
+        finally:
+            c.close()
+    calls.sort(key=lambda x: x["ts"] or 0, reverse=True)
+    return {"calls": calls[:limit], "profiles": prof, "ts": time.time()}
+
+
+def _short(s, n):
+    """Trim for display without pretending it was that short."""
+    s = (s or "").strip()
+    return s if len(s) <= n else s[:n] + f"… [+{len(s)-n} chars]"
+
+
 def task(task_id):
     """Read a Kanban task back: status plus the worker's own summary.
 
@@ -535,6 +609,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(headlines())
         if path == "/cortex":
             return self._send_json(cortex())
+        if path == "/activity":
+            return self._send_json(activity())
         if path == "/events":
             return self._sse()
         self.send_error(404)

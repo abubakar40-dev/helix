@@ -4131,3 +4131,79 @@ status read, and the `find -maxdepth 3`.
 `visual hub` and `gesture` are placeholders that say so in the UI. Console AGENT/NOTES
 tabs and CHAT likewise. No text chat yet — voice and WhatsApp remain the live channels.
 No visual screenshot (harness needs a visible tab).
+
+### UI Phase 3 — Console panel: REAL tool calls, not decoration
+
+The reference's right-hand panel shows INPUT/OUTPUT blocks. Before building anything I
+checked whether the data actually existed, because a fabricated agent trace is the exact
+old-Jarvis failure this project exists to prevent.
+
+It did. `state.db` has `messages.tool_calls` (the arguments the agent passed),
+`messages.tool_name` and a matching `role='tool'` row holding the result, plus `sessions`.
+228 tool-result rows existed on the default profile alone.
+
+New bridge endpoint **`/activity`** — read-only, stdlib-only, matching the rest of the
+bridge. Reads `tool_calls`, pairs each with its real result via `tool_call_id`, and
+labels it with the profile that made it. It renders **only what Hermes actually did**: if
+no tool was called, there is nothing to show.
+
+#### 🔴 The bug that would have shipped a panel showing one agent out of nine
+
+My first version read **`~/.hermes/state.db` only**. That is the CEO's database. Each
+Hermes profile keeps **its own** `state.db`, so the endpoint could only ever show the
+CEO — and it labelled every call `default`, which looked plausible and hid the problem.
+
+Measured, once I looked at what the recent real tasks had actually done:
+
+| profile | msgs | tool rows | newest |
+|---|---|---|---|
+| default | 569 | 228 | 10-09 23:19 |
+| dev | 44 | 17 | **10-10 00:59** |
+| sysmon | 44 | 15 | **10-10 00:53** |
+| document | 583 | 286 | 09-30 13:48 |
+| … 9 profiles | | **630 total** | |
+
+**228 of 630 — the single-database version silently dropped 64% of what the system
+actually did**, and the two tasks I had just run were invisible in it. Now every profile
+DB is read and the profile directory name is the label, because
+`sessions.profile_name` is the literal string `default` in **all 29 rows** and cannot be
+used for this.
+
+#### Verified live: a real sub-agent task appeared in the panel
+
+Watcher armed before dispatch, then task `t_ee88e7f3` assigned to **`vision`**:
+
+```
+01:01:36  vision  kanban_show     {"task_id": "t_ee88e7f3"}
+01:01:46  vision  tool_call       todo_list ...
+01:01:48  vision  tool_search     {"queries": "terminal run shell command"}
+01:01:57  vision  search_files    {"path": "/home/abubakargcx", "pattern": "helix"}
+01:02:10  vision  search_files    {"path":".../helix/ui","pattern":"."}
+01:02:23  vision  search_files    → "Search failed: rg: [Errno 2] No such file or directory"
+01:02:21  vision  kanban_complete {"ok": true, "run_id": 46}
+```
+
+Seven real calls, correct profile label, **including a genuine failure** the agent hit
+and worked around (`rg` missing), which is exactly the kind of thing a mock can never
+produce. The agent honestly reported it had no terminal tool and used file tools instead.
+
+Task result verified independently, not trusted: *"5 directories (agent-town, console,
+shell, voice-core, world-monitor)"* against `ls ~/helix/ui | wc -l` = **5**. Exact match.
+
+Final panel state: **40 blocks**, profiles `helix / vision / dev / sysmon`, 8 distinct
+tools (`search_files, kanban_complete, tool_search, tool_call, kanban_show, terminal,
+vision_analyze, read_file`), **0 console errors**.
+
+#### Two more of my own bugs, both caught by checking rather than assuming
+
+- **The panel rendered once and never updated**, so live agent work stayed invisible until
+  you re-selected the tab. Now polls every 6 s while the AGENT tab is active, and stops
+  when you leave it.
+- **The label fix never took effect** because I chained `node --check && systemctl restart`
+  — the check failed, so the restart never ran, and I read the *running* process and
+  concluded the fix was broken. The source was correct all along. **`&&` after a check is
+  a silent way to skip the thing you were verifying.**
+
+And the recurring one, for the seventh time: I twice reported "no calls rendered" and
+"the click did nothing" when the page had simply not finished loading. Probing a page
+before its handlers are attached produces findings indistinguishable from real ones.

@@ -64,11 +64,16 @@ done
 cmd=(); while (( $# )); do case "$1" in --*|-*) break ;; esac; cmd+=("$1"); shift; done
 set -- "${cmd[@]}"
 case "$1 $2" in
-  "iam availability-domain") echo "Abcd:ME-ABUDHABI-1-AD-1"; echo "Abcd:ME-ABUDHABI-1-AD-2" ;;
-  "compute shape") echo "VM.Standard.A1.Flex" ;;
-  "network vcn")   echo "ocid1.vcn.oc1.me-abudhabi-1.helixvcn" ;;
-  "network subnet") [[ "$3" == "get" ]] && echo False || echo "ocid1.subnet.oc1.me-abudhabi-1.public" ;;
-  "compute image") echo "ocid1.image.oc1.me-abudhabi-1.ubuntu2404" ;;
+  # The real CLI wraps list output in {"data":[...]} and prints the whole array for
+  # a list query even with --raw-output. An unfaithful mock hid a whole class of
+  # parsing bugs, so mirror the real envelope exactly.
+  "iam availability-domain") echo '{"data":[{"name":"Abcd:ME-ABUDHABI-1-AD-1"},{"name":"Abcd:ME-ABUDHABI-1-AD-2"}]}' ;;
+  "compute shape") echo '{"data":[{"shape":"VM.Standard.A1.Flex"}]}' ;;
+  "network vcn")   echo '{"data":[{"id":"ocid1.vcn.oc1.me-abudhabi-1.helixvcn","display-name":"helix-vcn"}]}' ;;
+  "network subnet")
+    if [[ "$3" == "get" ]]; then echo '{"data":{"prohibit-public-ip-on-vnic":false}}'
+    else echo '{"data":[{"id":"ocid1.subnet.oc1.me-abudhabi-1.public","display-name":"public"}]}'; fi ;;
+  "compute image") echo '{"data":[{"id":"ocid1.image.oc1.me-abudhabi-1.ubuntu2404","operating-system-version":"24.04","display-name":"Canonical-Ubuntu-24.04-aarch64-2026.09.18-0","time-created":"2026-09-21T00:00:00Z"}]}' ;;
   "compute instance") case "$3" in
       launch)
         n=$((n+1)); echo "$n" > "$MOCK_STATE"
@@ -81,16 +86,20 @@ case "$1 $2" in
         echo "ocid1.instance.oc1.me-abudhabi-1.fresh$n" ;;
       get) echo "${MOCK_GET_STATE:-RUNNING}" ;;
       list)
-        [[ -n "${MOCK_EXISTING:-}" ]] && echo "$MOCK_EXISTING"
-        [[ -n "${MOCK_A1_OCPU:-}"   ]] && echo "$MOCK_A1_OCPU"
-        exit 0 ;;
+        if [[ -n "${MOCK_EXISTING:-}" ]]; then
+          echo "{\"data\":[{\"id\":\"$MOCK_EXISTING\",\"displayName\":\"helix-a1\",\"lifecycleState\":\"RUNNING\",\"shape\":\"VM.Standard.A1.Flex\",\"shapeConfig\":{\"ocpus\":1,\"memoryInGBs\":6}}]}"
+        elif [[ -n "${MOCK_A1_OCPU:-}" ]]; then
+          echo "{\"data\":[{\"id\":\"ocid1.instance.oc1.me-abudhabi-1.old\",\"displayName\":\"other-a1\",\"lifecycleState\":\"RUNNING\",\"shape\":\"VM.Standard.A1.Flex\",\"shapeConfig\":{\"ocpus\":$MOCK_A1_OCPU,\"memoryInGBs\":6}}]}"
+        else
+          echo '{"data":[]}'
+        fi ;;
       list-vnics) echo "158.101.42.77" ;;
       *) echo '{}' ;;
     esac ;;
-  "compute volume-attachment") echo "ocid1.volume.oc1.me-abudhabi-1.orphan" ;;
-  "bv volume")
+  "compute volume-attachment")
     [[ "$3" == "delete" ]] && exit 0
-    echo '{}' ;;
+    echo '{"data":[{"volumeId":"ocid1.volume.oc1.me-abudhabi-1.orphan"}]}' ;;
+  "bv volume") exit 0 ;;
   *) echo '{}' ;;
 esac
 exit 0

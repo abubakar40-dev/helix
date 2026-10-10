@@ -4980,3 +4980,92 @@ works - this is the user's own tool, not something to lock down.
 `tools/check-orb.py`, `tools/helix-icon.svg` + generated PNGs, and the
 `.desktop` entry now `Exec=/usr/bin/python3 .../helix_app.py`.
 Removed `tools/helix-app.sh` - the Chrome launcher is gone, not left alongside.
+
+## Geometry audit against the reference prototype
+
+User pointed at `~/Downloads/HELIX_UI_Prototype` and asked to audit it and match
+**dimensions and block sizes only** - explicitly not to copy anything from it.
+
+### Method
+The prototype is a React + R3F + GSAP app whose `styles.css` is minified onto 5
+lines and truncated mid-rule, so reading it would have been guesswork. Instead
+`tools/audit-geometry.py` drives the RUNNING prototype over CDP at 1509x812 and
+reads each block's real bounding box, then does the same to HELIX with the
+identical selectors-by-position. Two measurements, one method, then a diff.
+
+Nothing was copied. The tool reads rendered geometry only; labels describe
+position in the layout ("satellite panel"), not the prototype's class names, so
+nothing carries across.
+
+### Reference geometry, measured
+```
+topbar           0,0    1509 x 35     padding 0 15px
+workspace        0,35   1509 x 777    padding 12px, flush into the statusbar
+left column      12,47  316 x 752     rows 134.969 / 415.328 / 181.703  gap 10
+centre column    340,47 642 x 752     rows 311.625 / 430.359             gap 10
+console          994,47 503 x 752     rows 42 / 660 / 48
+  media          12,47   316 x 135
+  satellite      12,192  316 x 415
+  headlines      12,617  316 x 182
+  core           340,47  642 x 312     padding 6px 10px 7px, cols 155 / 465.125
+  town           340,369 642 x 430     rows 37 / 358.359 / 26
+statusbar        0,799  1509 x 13
+start button     666,310 145 x 32
+```
+
+### What was wrong, and the fix
+| block | was | reference | error |
+|---|---:|---:|---:|
+| topbar height | 47 | 35 | **+12** |
+| statusbar height | 34 | 13 | **+21** |
+| headlines panel | 131 | 182 | **-51** |
+| core panel | 288 | 312 | -24 |
+| town panel | 407 | 430 | -23 |
+| satellite panel | 418 | 415 | +3 |
+| media panel | 134 | 135 | -1 |
+| start button | 150x50 | 145x32 | **+18 tall** |
+| row gap in a column | 12 | **10** | +2 |
+| core padding | 7/31/0/18 | 6/10/7 | — |
+
+The topbar and statusbar together were eating 33px from every panel below them,
+and the left rail's `gap:12px` applied the column gap to the row gap as well,
+so all three rail panels were short at once.
+
+Also fixed: the workspace had 12px of bottom padding, but the reference runs its
+columns flush into the statusbar (35 + 12 + 752 + 13 = 812 exactly).
+
+And the orb: the reference centres it in the 465px second column, giving an
+x of 737.6 - which is where its START button sits (738.5). Mine was left-aligned
+in a 299px box, 84px out. `justify-items:center` on the core grid moved it. The
+orb canvas itself stays 299x286, unchanged.
+
+### Result: zero delta on every block
+| block | reference | HELIX | delta |
+|---|---|---|---|
+| topbar | 0,0 1509x35 | 0,0 1509x35 | 0 |
+| left column | 12,47 316x752 | 12,47 316x752 | 0 |
+| media | 12,47 316x135 | 12,47 316x135 | 0 |
+| satellite | 12,192 316x415 | 12,192 316x415 | 0 |
+| headlines | 12,617 316x182 | 12,617 316x182 | 0 |
+| core | 340,47 642x312 | 340,47 642x312 | 0 |
+| town | 340,369 642x430 | 340,369 642x430 | 0 |
+| console | 994,47 503x752 | 994,47 503x752 | 0 |
+| statusbar | 0,799 1509x13 | 0,799 1509x13 | 0 |
+| start button | 666,310 145x32 | 666,310 145x32 | 0 |
+
+### Two bugs in the audit tool itself
+1. `sel = SELECTORS[i+1]` - an off-by-one that shifted every label by one, so
+   "topbar" reported the workspace's box. It also made the last lookup
+   `undefined`, which JSON.stringify drops, turning a missing element into a
+   `KeyError: 'sel'` instead of a clean "NOT FOUND".
+2. Read the page title on the first `load-changed` (COMMITTED, before the inline
+   script runs) in check-webgl, and reported a WebGL failure that was not one.
+
+Both were the same lesson from earlier in this project: a measurement harness
+that lies is worse than no harness.
+
+### Note
+The 13px statusbar leaves 12px of content box. The text fills it exactly and
+reads tight, which is the honest consequence of matching the reference height -
+`line-height` is pinned to 12px so nothing is clipped, and the avatar shrank from
+22px to 9px because at 22px it alone was taller than the whole strip.

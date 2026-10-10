@@ -15,6 +15,10 @@
 
 set -uo pipefail
 
+# OCI warns on every call that the private key has no OCI_API_KEY label. Cosmetic,
+# and it drowns the log, so silence it by default.
+export SUPPRESS_LABEL_WARNING="${SUPPRESS_LABEL_WARNING:-True}"
+
 # ---------------------------------------------------------------- config
 REGION="${OCI_REGION:-me-abudhabi-1}"
 SHAPE="${OCI_SHAPE:-VM.Standard.A1.Flex}"
@@ -22,9 +26,9 @@ OCPUS="${OCI_OCPUS:-2}"
 MEMORY_GB="${OCI_MEMORY_GB:-12}"
 DISPLAY_NAME="${OCI_DISPLAY_NAME:-helix-a1}"
 VCN_NAME="${OCI_VCN_NAME:-helix-vcn}"
-SUBNET_NAME="${OCI_SUBNET_NAME:-public}"
+SUBNET_NAME="${OCI_SUBNET_NAME:-public subnet-helix-vcn}"
 SSH_KEY="${OCI_SSH_KEY:-$HOME/.ssh/helix_oracle.pub}"
-UBUNTU="${OCI_UBUNTU_VERSION:-24.04 LTS}"
+UBUNTU="${OCI_UBUNTU_VERSION:-24.04}"
 LOG="${OCI_LOG:-$(cd "$(dirname "$0")/.." && pwd)/logs/oci-a1-launch.log}"
 
 # Always Free A1 allowance: 1,500 OCPU-h and 9,000 GB-h per month == 2 OCPU + 12 GB 24x7.
@@ -60,6 +64,11 @@ die() { log "FATAL: $*"; exit 1; }
 OCI_ARGS=(--region "$REGION")
 [[ -n "${OCI_PROFILE:-}" ]] && OCI_ARGS+=(--profile "$OCI_PROFILE")
 o() { oci "${OCI_ARGS[@]}" --max-retries 1 "$@"; }
+
+# oci --raw-output prints the whole JSON array for a list query, not one value per
+# line, so unwrap lists with jq. A single-value --query with --raw-output is fine.
+# ol <jq-suffix> <oci args...>   e.g. ol '.id' network vcn list --compartment-id X
+ol() { local path=$1; shift; o "$@" --output json 2>/dev/null | jq -r ".data[]${path}"; }
 
 # OCI writes errors as JSON on stderr; fall back to raw text when it is not JSON.
 err_field() { printf '%s' "$1" | jq -r ".${2} // empty" 2>/dev/null; }
@@ -104,9 +113,9 @@ fi
 log "compartment: $COMPARTMENT"
 
 # Auth check and AD discovery in one call.
-AD_JSON=$(o iam availability-domain list --compartment-id "$COMPARTMENT" --query 'data[].name' --raw-output 2>&1)
-if [[ $? -ne 0 ]]; then
-  printf '%s\n' "$AD_JSON" | tee -a "$LOG" >&2
+AD_JSON=$(ol '.name' iam availability-domain list --compartment-id "$COMPARTMENT")
+if [[ -z "$AD_JSON" ]]; then
+  o iam availability-domain list --compartment-id "$COMPARTMENT" --query 'data[].name' --raw-output 2>&1 | tee -a "$LOG" >&2
   die "IAM call failed - wrong OCID/fingerprint/region, or the API key is not active yet"
 fi
 while IFS= read -r ad; do [[ -n "$ad" ]] && AD_LIST+=("$ad"); done <<<"$AD_JSON"
@@ -123,10 +132,10 @@ o compute shape list --compartment-id "$COMPARTMENT" --query 'data[?shape==`'"$S
 # VCN.
 VCN_ID="${OCI_VCN_ID:-}"
 if [[ -z "$VCN_ID" ]]; then
-  mapfile -t vcns < <(o network vcn list --compartment-id "$COMPARTMENT" --display-name "$VCN_NAME" --query 'data[].id' --raw-output 2>/dev/null)
+  mapfile -t vcns < <(ol '.id' network vcn list --compartment-id "$COMPARTMENT" --display-name "$VCN_NAME")
   case ${#vcns[@]} in
     1) VCN_ID=${vcns[0]} ;;
-    0) die "no VCN named '$VCN_NAME' in $COMPARTMENT. Fix the name, or set OCI_VCN_ID / OCI_COMPARTMENT_ID. VCNs present: $(o network vcn list --compartment-id "$COMPARTMENT" --query 'data[]."display-name"' --raw-output 2>/dev/null | tr '\n' ' ')" ;;
+    0) die "no VCN named '$VCN_NAME' in $COMPARTMENT. Fix the name, or set OCI_VCN_ID / OCI_COMPARTMENT_ID. VCNs present: $(ol '."display-name"' network vcn list --compartment-id "$COMPARTMENT" | tr '\n' ' ')" ;;
     *) die "'$VCN_NAME' matches ${#vcns[@]} VCNs - set OCI_VCN_ID explicitly" ;;
   esac
 fi
@@ -135,10 +144,10 @@ log "vcn      : $VCN_ID"
 # Subnet.
 SUBNET_ID="${OCI_SUBNET_ID:-}"
 if [[ -z "$SUBNET_ID" ]]; then
-  mapfile -t subs < <(o network subnet list --compartment-id "$COMPARTMENT" --vcn-id "$VCN_ID" --display-name "$SUBNET_NAME" --query 'data[].id' --raw-output 2>/dev/null)
+  mapfile -t subs < <(ol '.id' network subnet list --compartment-id "$COMPARTMENT" --vcn-id "$VCN_ID" --display-name "$SUBNET_NAME")
   case ${#subs[@]} in
     1) SUBNET_ID=${subs[0]} ;;
-    0) die "no subnet named '$SUBNET_NAME' in $VCN_ID. Subnets present: $(o network subnet list --compartment-id "$COMPARTMENT" --vcn-id "$VCN_ID" --query 'data[]."display-name"' --raw-output 2>/dev/null | tr '\n' ' ')" ;;
+    0) die "no subnet named '$SUBNET_NAME' in $VCN_ID. Subnets present: $(ol '."display-name"' network subnet list --compartment-id "$COMPARTMENT" --vcn-id "$VCN_ID" | tr '\n' ' ')" ;;
     *) die "'$SUBNET_NAME' matches ${#subs[@]} subnets - set OCI_SUBNET_ID explicitly" ;;
   esac
 fi
@@ -151,10 +160,9 @@ log "subnet   : $SUBNET_ID"
 # Coerced to a number so a surprise response cannot quietly disable the check below.
 sum_a1() {
   local v
-  v=$(o compute instance list --compartment-id "$COMPARTMENT" \
-      --query 'data[?lifecycleState!="TERMINATED" && shape==`'"$SHAPE"'`].shapeConfig.'"$1" \
-      --raw-output 2>/dev/null \
-      | jq -s 'map(select(type == "number")) | add // 0 | floor' 2>/dev/null)
+  v=$(o compute instance list --compartment-id "$COMPARTMENT" --output json 2>/dev/null \
+      | jq -r --arg s "$SHAPE" '[.data[] | select(.lifecycleState != "TERMINATED" and .shape == $s)
+                                 | .shapeConfig.'"$1"' // 0] | add // 0 | floor')
   [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0
 }
 used_ocpu=$(sum_a1 ocpus); used_mem=$(sum_a1 memoryInGBs)
@@ -164,13 +172,16 @@ else
   log "always free: ${used_ocpu}->$((used_ocpu + OCPUS)) OCPU, ${used_mem}->$((used_mem + MEMORY_GB)) GB (cap ${FREE_OCPUS}/${FREE_MEMORY_GB})"
 fi
 
-# Image: latest Canonical Ubuntu for this region, resolved at runtime because OCIDs
-# are regional and Canonical rotates the image.
+# Image: newest Canonical Ubuntu for this region, resolved at runtime because OCIDs
+# are regional and Canonical rotates the image. Must be the aarch64 build: A1 is
+# ARM, and an x86_64 Ubuntu image will not boot on it.
 IMAGE_ID="${OCI_IMAGE_ID:-}"
 if [[ -z "$IMAGE_ID" ]]; then
   IMAGE_ID=$(o compute image list --compartment-id "$COMPARTMENT" --operating-system "Canonical Ubuntu" \
-    --query 'sort_by(data[?"operating-system-version"==`'"$UBUNTU"'`],&time_created)[-1].id' --raw-output 2>/dev/null)
-  [[ "$IMAGE_ID" == ocid1.image.* ]] || die "no Canonical Ubuntu '$UBUNTU' image in $REGION (check OCI_UBUNTU_VERSION, or set OCI_IMAGE_ID)"
+    --output json 2>/dev/null | jq -r --arg v "$UBUNTU" \
+      '[.data[] | select(.["operating-system-version"] == $v and (.["display-name"] | test("aarch64")))]
+       | sort_by(.["time-created"]) | last | .id // empty')
+  [[ "$IMAGE_ID" == ocid1.image.* ]] || die "no Canonical Ubuntu $UBUNTU aarch64 image in $REGION (set OCI_UBUNTU_VERSION or OCI_IMAGE_ID)"
 fi
 log "image    : $IMAGE_ID"
 
@@ -200,7 +211,7 @@ cleanup_boot_volume() {
   # go via the instance's volume attachments instead. A VM we just launched has
   # exactly one, so the first entry is the boot volume.
   bvid=$(o compute volume-attachment list --compartment-id "$COMPARTMENT" --instance-id "$1" \
-         --query 'data[].volumeId' --raw-output 2>/dev/null | grep '^ocid1\.volume\.' | head -1)
+         --output json 2>/dev/null | jq -r '.data[0].volumeId // empty')
   [[ -z "$bvid" ]] && return 0
   if o bv volume delete --volume-id "$bvid" --force >/dev/null 2>&1; then
     log "  reclaimed orphaned boot volume $bvid"
@@ -245,9 +256,9 @@ while :; do
 
   # Adopt an existing instance instead of launching a duplicate. Guard on the OCID
   # shape so stray output is never mistaken for an instance id.
-  INST_ID=$(o compute instance list --compartment-id "$COMPARTMENT" --display-name "$DISPLAY_NAME" \
-            --query 'data[?lifecycleState!="TERMINATED"].id' --raw-output 2>/dev/null \
-            | grep '^ocid1\.instance\.' | head -1)
+  INST_ID=$(o compute instance list --compartment-id "$COMPARTMENT" --output json 2>/dev/null \
+            | jq -r '.data[] | select(.displayName == $n and .lifecycleState != "TERMINATED") | .id' \
+                  --arg n "$DISPLAY_NAME" | head -1)
   if [[ -n "$INST_ID" ]]; then
     log "existing instance $INST_ID found, adopting it"
   else

@@ -29,9 +29,12 @@ body{
 }
 
 /* ── title bar (reference 1509x47) ─────────────────────────────── */
+/* Reference measures the topbar at exactly 35px, not 47. It is the single
+   biggest vertical error in the previous layout: 12px of it was stolen from
+   the workspace on every launch. */
 #titlebar{
-  height:47px;flex:0 0 47px;display:flex;align-items:center;gap:10px;
-  padding:0 14px;background:#070c12;border-bottom:1px solid var(--line);
+  height:35px;flex:0 0 35px;display:flex;align-items:center;gap:10px;
+  padding:0 15px;background:#070c12;border-bottom:1px solid var(--line);
 }
 #brand{
   display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:.18em;
@@ -60,10 +63,16 @@ body{
    Reference 1509x812: left 12,47 316x752 | centre 340,47 643x752 |
    right 995,47 504x752. fr units, not %, because % resolves against the
    content box and overflows by the gap width. */
+/* Reference, measured at 1509x812:
+     topbar 35 | 12px pad | columns 752 | statusbar 13  =  812
+   The columns run flush into the statusbar, so there is NO bottom padding.
+   Row gap inside a column is 10px; the gap BETWEEN columns is 12px. Using one
+   `gap` value for both is why every panel came out short.
+     centre column rows: core 312, town 430, +10 gap = 752               */
 main{
-  flex:1;min-height:0;display:grid;gap:12px;padding:12px;
-  grid-template-columns:minmax(0,316fr) minmax(0,643fr) minmax(0,504fr);
-  grid-template-rows:minmax(0,307fr) minmax(0,433fr);
+  flex:1;min-height:0;display:grid;gap:10px 12px;padding:12px 12px 0;
+  grid-template-columns:minmax(0,316fr) minmax(0,642fr) minmax(0,503fr);
+  grid-template-rows:minmax(0,312fr) minmax(0,430fr);
   grid-template-areas:"left core console" "left town console";
 }
 #left,#core,#town,#console{min-width:0;min-height:0}
@@ -84,11 +93,12 @@ main{
 }
 .ph{
   flex:0 0 auto;display:flex;align-items:center;gap:8px;
-  padding:8px 12px;border-bottom:1px solid var(--line);
+  padding:6px 12px;border-bottom:1px solid var(--line);
   font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);
   background:#070c12aa;
 }
-#console .ph{height:47px;flex:0 0 47px}
+/* Reference console rows: 42px header / 660px body / 48px composer. */
+#console .ph{height:42px;flex:0 0 42px}
 .ph .tag{color:var(--cy)}
 .ph .tools{margin-left:auto;display:flex;gap:6px;align-items:center}
 .icobtn{
@@ -99,9 +109,16 @@ main{
 .pb{flex:1;min-height:0;position:relative}
 
 /* ── centre: node pills + connectors + core ─────────────────────── */
-#core{position:relative;display:flex;align-items:flex-start;
-  justify-content:space-between;padding:7px 31px 0 18px}
-#nodes{display:flex;flex-direction:column;gap:21px;width:150px;flex:0 0 150px;margin-top:31px}
+/* Reference core panel: padding 6px 10px 7px, columns 155px / 465.125px.
+   Mine inset the orb 31px from the right and 18px from the left, which pushed
+   it off the reference position entirely. */
+/* Reference: the orb is CENTRED in the 465px second column, not left-aligned in
+   a 299px box. Content box is 350..972 with the column starting at 505, so its
+   centre is x=737.6 - which is where the reference START button sits (738.5).
+   The orb canvas stays 299x286; only its placement changes. */
+#core{position:relative;display:grid;grid-template-columns:155px minmax(0,1fr);
+  align-items:start;justify-items:center;padding:6px 10px 7px}
+#nodes{display:flex;flex-direction:column;gap:21px;width:155px;flex:0 0 155px}
 .node{
   --nc:var(--cy);
   display:flex;align-items:center;gap:8px;height:36px;padding:0 10px 0 9px;
@@ -122,6 +139,7 @@ main{
 #links{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;overflow:visible}
 #orbwrap{
   width:299px;height:286px;flex:0 0 299px;position:relative;overflow:hidden;
+  margin-top:13px;
   clip-path:var(--bevel);
   background:radial-gradient(120% 120% at 50% 38%,#0e1a26 0%,#060b11 72%);
   box-shadow:0 10px 34px #000a;
@@ -139,9 +157,10 @@ main{
 }
 #orbstate .dot{width:6px;height:6px;flex:0 0 6px}
 #coreState{color:var(--dim);letter-spacing:.1em}
+/* Reference start button measures 145 x 32. Mine was 150 x 50. */
 #startbtn{
-  position:absolute;left:50%;bottom:14px;transform:translateX(-50%);z-index:2;
-  padding:9px 34px;cursor:pointer;background:#08151c;color:var(--cy);
+  position:absolute;left:50%;transform:translateX(-50%);z-index:2;
+  width:145px;height:32px;padding:0;bottom:10px;cursor:pointer;background:#08151c;color:var(--cy);
   border:1px solid var(--cy);font:600 10.5px/1 inherit;letter-spacing:.26em;
   clip-path:polygon(12px 0,calc(100% - 12px) 0,100% 50%,calc(100% - 12px) 100%,12px 100%,0 50%);
   box-shadow:0 0 20px -6px var(--cy);transition:.15s;
@@ -150,10 +169,10 @@ main{
 #startbtn.stop{border-color:var(--rd);color:var(--rd);box-shadow:0 0 20px -6px var(--rd)}
 
 /* ── left rail ──────────────────────────────────────────────────── */
-#left{display:flex;flex-direction:column;gap:12px;min-height:0}
-#camPanel{flex:137 1 0;min-height:76px}
-#globePanel{flex:427 1 0;min-height:150px}
-#hlPanel{flex:134 1 0;min-height:64px}
+/* Reference left column: 134.969 / 415.328 / 181.703 with a 10px gap.
+   Headlines was 131px against a target of 182 - the shortest panel was the one
+   losing the most, which is why the rail read top-heavy. */
+#left{display:grid;grid-template-rows:135fr 415fr 182fr;gap:10px;min-height:0}
 #camPanel .pb{background:#05080c}
 #camFeed{width:100%;height:100%;object-fit:cover;display:block}
 #camOff,#camErr{position:absolute;inset:0;display:grid;place-content:center;
@@ -198,6 +217,8 @@ main{
 #headlines .src{color:var(--dim);font-size:9.5px;margin-top:2px}
 
 /* ── agent town ─────────────────────────────────────────────────── */
+/* Reference town panel rows: 37px header / 358px scene / 26px footer. */
+#town .ph{height:37px;flex:0 0 37px}
 #townhead{display:flex;align-items:center;gap:4px;margin-left:auto}
 .tab{
   padding:4px 12px;border-radius:5px;cursor:pointer;font-size:10px;letter-spacing:.1em;
@@ -221,18 +242,26 @@ main{
 #chat button:hover{border-color:var(--cy);color:var(--cy)}
 
 /* ── global status bar (own row, like the reference) ────────────── */
+/* Reference statusbar is 13px - a full-width strip flush under the columns.
+   Mine was 34px, which is 21px taken straight out of the workspace. The avatar
+   had to shrink to fit: at 22px it alone was taller than the whole strip. */
+/* 13px minus the 1px border is 12px of content, so line-height has to be
+   pinned or the text is clipped at the bottom edge - it overflowed because the
+   default line-height was taller than the strip itself. */
 #status{
-  flex:0 0 34px;display:flex;align-items:center;gap:18px;padding:0 14px;
-  border-top:1px solid var(--line);background:#070c12;color:var(--dim);font-size:10.5px;
+  flex:0 0 13px;display:flex;align-items:center;gap:14px;padding:0 12px;
+  border-top:1px solid var(--line);background:#070c12;color:var(--dim);
+  font-size:9px;line-height:12px;overflow:hidden;white-space:nowrap;
 }
+#status b{line-height:12px}
 #status b{color:var(--ink);font-weight:600}
-.meter{width:88px;height:5px;border-radius:99px;background:#131c26;overflow:hidden;display:inline-block;
+.meter{width:64px;height:4px;border-radius:99px;background:#131c26;overflow:hidden;display:inline-block;
   vertical-align:middle}
 .meter i{display:block;height:100%;background:linear-gradient(90deg,var(--cy),var(--gr))}
 .avatar{
-  width:22px;height:22px;border-radius:50%;flex:0 0 22px;display:grid;place-items:center;
-  background:linear-gradient(140deg,#12313d,#0c1c26);border:1px solid var(--cy);
-  color:var(--cy);font-size:10px;font-weight:700;
+  width:9px;height:9px;border-radius:50%;flex:0 0 9px;display:grid;place-items:center;
+  background:#0c1c26;border:1px solid var(--cy);
+  color:var(--cy);font-size:5px;font-weight:700;line-height:1;
 }
 
 /* ── console (right) ────────────────────────────────────────────── */
@@ -274,7 +303,7 @@ main{
 
 /* command bar, full width at the bottom like the reference */
 #composer{
-  flex:0 0 56px;display:flex;align-items:center;gap:10px;margin:0 14px 14px;
+  flex:0 0 48px;display:flex;align-items:center;gap:10px;margin:0 12px;
   padding:0 6px 0 12px;border:1px solid var(--line);border-radius:9px;background:#0b131b;
 }
 #composer:focus-within{border-color:#2b4256}

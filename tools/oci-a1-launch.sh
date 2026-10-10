@@ -22,8 +22,14 @@ export SUPPRESS_LABEL_WARNING="${SUPPRESS_LABEL_WARNING:-True}"
 # ---------------------------------------------------------------- config
 REGION="${OCI_REGION:-me-abudhabi-1}"
 SHAPE="${OCI_SHAPE:-VM.Standard.A1.Flex}"
-OCPUS="${OCI_OCPUS:-2}"
-MEMORY_GB="${OCI_MEMORY_GB:-12}"
+# Start at 1 OCPU / 6 GB, not 2 / 12. Capacity is fragmented across hosts, so a
+# 1-OCPU request lands somewhere a 2-OCPU one cannot, and that is where the extra
+# success rate comes from. Two 1-OCPU instances total the same 2 OCPU / 12 GB, so
+# nothing is given up: once this one is up, rerun with a different display-name to
+# fill out the allowance. Resizing up is NOT equivalent - a resize behaves like a
+# fresh launch and can fail, leaving you with less than you started with.
+OCPUS="${OCI_OCPUS:-1}"
+MEMORY_GB="${OCI_MEMORY_GB:-6}"
 DISPLAY_NAME="${OCI_DISPLAY_NAME:-helix-a1}"
 VCN_NAME="${OCI_VCN_NAME:-helix-vcn}"
 SUBNET_NAME="${OCI_SUBNET_NAME:-public subnet-helix-vcn}"

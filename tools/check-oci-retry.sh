@@ -160,7 +160,8 @@ grep -q 'adopting it' <<<"$out" && pass "existing instance adopted" || fail "did
 grep -q 'launch accepted' <<<"$out" && fail "launched a duplicate despite an existing instance" \
                                   || pass "no duplicate launch"
 
-out=$(run "x" MOCK_A1_OCPU=1 MOCK_LAUNCH_FAILS=0)
+# 2 OCPU already in use + the default 1 more = 3 > the 2 OCPU free cap
+out=$(run "x" MOCK_A1_OCPU=2 MOCK_LAUNCH_FAILS=0)
 grep -q 'BILLING RISK' <<<"$out" && pass "warns when the launch would exceed Always Free" \
                                || fail "no BILLING RISK warning with an A1 already running"
 

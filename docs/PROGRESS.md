@@ -4892,3 +4892,91 @@ It is open on screen now in an app window.
 ### Skipped
 - A separate quit/restart script: closing the app window quits the instance, and
   the systemd user units stay up, so reopening is already a clean reload.
+
+## HELIX is now a real desktop app (not a browser with hidden chrome)
+
+User: "why are you opening it in chrome, make a separate app for helix, don't
+mess up, like every normal app i want a separate app for helix with a dedicated
+logo."
+
+The previous launcher was a `.desktop` entry that ran `google-chrome --app=` -
+a browser window with its toolbars hidden. That is a costume, not an app, and
+the complaint was correct.
+
+### Stack: GTK3 + WebKit2GTK, because both are already installed
+```
+python3-gi              3.56.2-1
+libwebkit2gtk-4.1-0     2.52.6-0ubuntu0.26.04.1
+gir1.2-webkit2-4.1      2.52.6-0ubuntu0.26.04.1
+```
+Zero new downloads. No Electron (would ship a second browser engine to render a
+frontend that already exists), no second GUI toolkit, no Chromium.
+
+Measured after launch: **185 MB** for the running app, against ~400 MB for a
+single Chrome app window - and Chrome was the thing leaking 3.9 GB across 18
+renderers earlier in this session.
+
+`tools/helix_app.py` - own process, own GTK window, own icon, `prgname`
+`helix-console` so GNOME groups it under its own dock icon and not a browser's.
+Starts any stopped `helix-*` unit, then polls the bridge until it answers.
+
+### Dedicated logo
+New `tools/helix-icon.svg`: dark rounded plate, HUD grid, cyan sphere with
+lat/long wireframe, two orbital rings, travelling energy node. Rendered to
+16/24/32/48/64/128/256 PNGs and installed into
+`~/.local/share/icons/hicolor/*/apps/helix-console.png` plus the scalable SVG;
+icon cache rebuilt; `Gtk.IconTheme` resolves `helix-console` -> True.
+
+**ImageMagick could not render it.** `convert -density 400 icon.svg` fell back
+to its internal MSVG parser and dropped every gradient, the plate and the rings,
+producing a white-on-white image with only the wireframe visible. Re-rendered
+through `GdkPixbuf`, which is the same librsvg path GTK itself uses.
+
+### Measured, not assumed: does it actually work?
+Five GTK/WebKit API errors in a row, each found by relaunching and reading the
+traceback: `override_background_color` (deprecated, and `rgba.copy()` is not a
+valid arg), `WebContext.get_settings` (settings live on the WebView),
+`Window.add_accel`, `AccelGroup.accel_activate`, and `add_accelerator` wanting a
+real signal name. One error per launch was wasteful, so `tools/check-app.py`
+builds the window without the main loop and checks everything at once:
+
+```
+PASS  window constructs and shows   PASS  accelerator group attached
+PASS  icon resolves to a real file  PASS  Ctrl+R parses to a real key combo
+PASS  backend check returns a bool  PASS  title is HELIX
+PASS  webview exposes load_uri      PASS  reload() is callable
+PASS  toggle_fullscreen() is callable                     SELFTEST: PASS
+```
+
+WebGL (`tools/check-webgl.py`):
+```
+webgl  OK    version  WebGL 2.0    max texture  16384
+```
+Worth measuring separately because WebKit2GTK is not Chromium - it can pass
+"can I make a context" and still render the Three.js orb as a black box.
+
+The real page inside a real webview (`tools/check-orb.py`) - sampling the actual
+canvas pixels, not trusting a status line:
+```
+orb scene  True          node pills   4
+orb canvas 299x286       connectors   4 paths
+headlines  16 items      tool cards   40
+orb luma   150.18 mean   orb lit      100% of sampled pixels     SELFTEST: PASS
+```
+The 4 connector paths confirm the earlier `id="top"` duplicate fix holds here too.
+
+Two bugs in the probe itself, worth recording: it read the title on the first
+`load-changed` (COMMITTED, before the inline script ran) and reported a WebGL
+failure that was not one; and it connected its own load handler from inside the
+callback that handler was supposed to call, which is a deadlock that returned
+"no result" rather than crashing.
+
+### Keyboard
+Ctrl+R and F5 reload, Ctrl+Q quit. Developer extras stay on so Ctrl+Shift+I
+works - this is the user's own tool, not something to lock down.
+
+### Files
+`tools/helix_app.py` (the app), `tools/check-app.py`, `tools/check-webgl.py`,
+`tools/check-orb.py`, `tools/helix-icon.svg` + generated PNGs, and the
+`.desktop` entry now `Exec=/usr/bin/python3 .../helix_app.py`.
+Removed `tools/helix-app.sh` - the Chrome launcher is gone, not left alongside.

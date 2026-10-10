@@ -4833,3 +4833,62 @@ Re-measured after the revert: orb panel mean luma 144.4, hot>200 31.4%, versus
 134.5 / 23.8% pre-rebuild. The orb is animated and its bloom runs
 `1.6 + sin(t)*0.3`, so any two captures land on a different phase - the
 identical file hash is the real evidence, not a single frame's brightness.
+
+## Desktop app launcher
+
+User: tired of asking for the console to be opened in a browser. Wanted a
+desktop icon that behaves like a normal app - click to open, quit to close,
+reopen to refresh.
+
+### Stack decision
+**No Electron, no PySide6.** The console is a local web app served by the
+existing bridge, and the native Linux way to present one as an application is a
+`.desktop` entry plus a browser's `--app=` window mode (no tabs, no address bar,
+no browser chrome). Bundling a second browser engine or a second GUI toolkit to
+render a frontend that already exists would be the competing-architecture move
+the rebuild prompt explicitly rules out. Zero new dependencies.
+
+### Refresh actually works
+Checked before building it, because "quit and reopen to refresh" is only true if
+the UI is not served from cache:
+```
+/console/        Cache-Control: no-cache, must-revalidate
+/console/*.js    Cache-Control: no-cache, must-revalidate
+```
+
+### Browser order is measured, not assumed
+| browser | result |
+|---|---|
+| `google-chrome` | honours `--user-data-dir` + `--app`; independent instance, quits with its window. **11-15 processes on the private profile.** |
+| `brave` (snap) | the snap wrapper forces its own `--user-data-dir` and prints `Opening in existing browser session`, ignoring ours. Falls back to opening an app window inside the user's running Brave session. |
+
+My first version preferred Brave and passed `--user-data-dir`; it logged a
+successful launch while opening nothing at all. Caught by checking the process
+table instead of trusting the log line. Note: `pgrep -f 'helix-app-profile'`
+also matched its own command line, which faked a "already running" count - the
+`[...]` bracket trick is required in those greps.
+
+### Files
+- `tools/helix-app.sh` - starts any stopped `helix-*` user units, then **polls**
+  the bridge until it actually answers (not a fixed sleep: a slow start would
+  otherwise open a blank window), then opens the app window. Logs to
+  `~/.local/share/helix-app.log`.
+- `tools/helix-icon.svg` + installed to
+  `~/.local/share/icons/hicolor/scalable/apps/helix-console.svg`
+- `~/.local/share/applications/helix-console.desktop` - passes
+  `desktop-file-validate` with no warnings
+- `~/Desktop/helix-console.desktop` - executable, and
+  `metadata::trusted` set, without which GNOME refuses to launch it
+- pinned first in `org.gnome.shell favorite-apps`
+
+### Verified through the real click path, not just the script
+```
+$ gio launch ~/Desktop/helix-console.desktop
+  procs on private profile : 11
+  chrome->8787 connections : 3      <- page + modules + SSE /events
+```
+It is open on screen now in an app window.
+
+### Skipped
+- A separate quit/restart script: closing the app window quits the instance, and
+  the systemd user units stay up, so reopening is already a clean reload.

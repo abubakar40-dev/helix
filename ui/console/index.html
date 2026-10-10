@@ -179,6 +179,12 @@ main{
 #camErr{color:var(--rd);letter-spacing:0;font-size:10px}
 #camPanel button{text-transform:uppercase}
 #camPanel button.on{border-color:var(--rd);color:var(--rd)}
+.mini{margin-left:8px;padding:2px 8px;border-radius:4px;cursor:pointer;
+  background:#0b141c;border:1px solid var(--line);color:var(--dim);font-size:9px;letter-spacing:.12em}
+.mini.live{border-color:var(--gr);color:var(--gr)}
+.mini.arm{border-color:var(--am);color:var(--am)}
+#gestStatus{position:absolute;left:8px;bottom:6px;font-size:9px;letter-spacing:.1em;
+  color:var(--dim);pointer-events:none;text-shadow:0 0 4px #000}
 #globe{position:absolute;inset:0;border:0;width:100%;height:100%;background:#000}
 #globeTools{
   position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:5px;z-index:3
@@ -318,13 +324,14 @@ main{
     <section class="panel" id="camPanel">
       <div class="ph"><span class="tag">◉</span> Media Link
         <span id="camState" style="margin-left:auto;text-transform:none;letter-spacing:0">offline</span>
-        <button id="camToggle" style="margin-left:8px;padding:2px 8px;border-radius:4px;cursor:pointer;
-          background:#0b141c;border:1px solid var(--line);color:var(--dim);font-size:9px;letter-spacing:.12em">START</button>
+        <button id="camToggle" class="mini">START</button>
+        <button id="gestToggle" class="mini">GESTURE</button>
       </div>
       <div class="pb">
         <img id="camFeed" alt="" hidden>
         <div id="camOff"><span>CAMERA OFF</span></div>
         <div id="camErr" hidden></div>
+        <div id="gestStatus"></div>
       </div>
     </section>
     <section class="panel" id="globePanel">
@@ -417,7 +424,11 @@ const log = (txt, cls="info") => {
 
 /* ── orb ───────────────────────────────────────────────── */
 let orb = null;
-try { orb = createOrbScene($("#orb")); log("orb ready","ok"); }
+try { orb = createOrbScene($("#orb")); log("orb ready","ok");
+  // Module scope, so `orb` is invisible to the page: a test or a console poke
+  // resolves `orb` to the <div id="orb"> element instead and gets undefined
+  // methods. Publishing it keeps gesture control measurable.
+  window.helixOrb = orb; }
 catch(e){ log("orb failed: "+e.message,"bad"); $("#orb").innerHTML =
   `<div style="padding:20px;color:var(--rd)">Three.js could not start: ${e.message}</div>`; }
 
@@ -548,7 +559,12 @@ function camStart(){
   img.onerror = () => {
     $("#camState").textContent = "offline";
     $("#camErr").hidden = false;
-    $("#camErr").textContent = "Camera unavailable — /dev/video0 could not be opened.";
+    // The bridge now answers 503 with ffmpeg's own reason (measured:
+    // "Error opening input: Device or resource busy."), but an <img> cannot read
+    // a response body, so name both causes here rather than spend a second
+    // request to ask. The usual one is GESTURE holding /dev/video0 - it is
+    // single-client on this box and gesture control runs as a service.
+    $("#camErr").textContent = "Camera unavailable — /dev/video0 is held by another process. Stop GESTURE first.";
     camStop();
   };
   img.src = "/cam?cb=" + Date.now();
@@ -668,6 +684,54 @@ $("#fileInput").onchange = e => { const f = e.target.files[0]; if (f) upload(f);
 $("#typebox").addEventListener("paste", e => {
   const it = [...(e.clipboardData?.items||[])].find(i => i.type.startsWith("image/"));
   if (it){ e.preventDefault(); upload(it.getAsFile()); } });
+
+/* ── gesture control: webcam hand tracking drives the orb ────────────────
+   Events come from tools/gesture.py over SSE (127.0.0.1:8789). One hand pinched
+   = grab, motion rotates; two hands = their spacing zooms; a fist releases.
+   The orb already exposes rotateBy/zoomIn/zoomOut, so nothing about the orb had
+   to change - only who calls it. */
+const GESTURE_URL = "http://127.0.0.1:8789/events";
+let gES = null;
+
+function setGesture(on){
+  const btn = $("#gestToggle"), st = $("#gestStatus");
+  if (on){
+    if (gES) return;
+    gES = new EventSource(GESTURE_URL);
+    btn.classList.add("live"); btn.textContent = "STOP GEST";
+    st.textContent = "starting camera…";
+    // State frames are written as bare `data:` lines with no `event:` name, so
+    // the browser delivers them as the default "message" event. Listening for a
+    // named "state" event silently never fired.
+    gES.onmessage = e=>{
+      let d; try{ d = JSON.parse(e.data); }catch{ return; }
+      if (d.error){ st.textContent = "gesture: " + d.error; btn.classList.remove("live");
+                    btn.classList.add("arm"); return; }
+      const g = d.last_gesture;
+      st.textContent = `${d.hands} hand${d.hands===1?"":"s"} · ${d.fps}fps · ${g}`;
+      st.style.color = g === "drag" ? "var(--am)" : g === "zoom" ? "var(--cy)" : "var(--dim)";
+    };
+    gES.addEventListener("drag", e=>{
+      let d; try{ d = JSON.parse(e.data); }catch{ return; }
+      if (orb) orb.rotateBy(d.dx * 2.2, d.dy * 2.2);
+    });
+    gES.addEventListener("zoom", e=>{
+      let d; try{ d = JSON.parse(e.data); }catch{ return; }
+      if (!orb) return;
+      if (d.delta > 0.008) orb.zoomIn(); else if (d.delta < -0.008) orb.zoomOut();
+    });
+    gES.onerror = () => {
+      st.textContent = "gesture service unreachable — is gesture.py running?";
+      btn.classList.remove("live"); btn.classList.add("arm");
+      gES.close(); gES = null;
+    };
+  } else {
+    if (gES){ gES.close(); gES = null; }
+    btn.classList.remove("live","arm"); btn.textContent = "GESTURE";
+    st.textContent = "";
+  }
+}
+$("#gestToggle").onclick = () => setGesture(!gES);
 
 /* ── real tool calls, from state.db via /activity ────────────────────── */
 let actMode = "voice";

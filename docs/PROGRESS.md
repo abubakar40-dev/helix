@@ -4564,3 +4564,111 @@ software WebGL and was still loading terrain when captured, so the console scree
 shows the HUD over an olive background. That is the harness, not the app — but it does
 mean **the in-console globe is verified for chrome removal, not for imagery**, and only
 the user's own browser can close that.
+
+## Gesture control (requirements §21) — implemented and measured
+
+User's pick after the UI phases: webcam hand tracking that drives the orb
+(touch / rotate / move / zoom in / zoom out).
+
+### Environment measured before writing anything
+- `cv2 5.0.0` already installed system-wide, `mediapipe` was not.
+- PEP 668 blocks system pip, so MediaPipe went into its own venv
+  `~/.local/share/helix-gesture-venv` (project pattern: helix-tts-venv,
+  helix-live-venv, helix-docs-venv). System `cv2` re-verified untouched at 5.0.0.
+- **mediapipe 1.1.0 has no `solutions` API any more.** The legacy
+  `mp.solutions.hands` is gone; it is Tasks-only now. Nothing bundled either.
+- Downloaded both free Google models (7.8 MB hand_landmarker, 8.4 MB
+  gesture_recognizer). Both fetched HTTP 200 with plausible sizes.
+
+### `tools/gesture.py`
+Camera -> HandLandmarker -> SSE on 127.0.0.0:8789.
+- one hand pinched (thumb+index) = grab, relative motion rotates the orb
+- two hands = pinch span ratio zooms in/out
+- closed fist releases; pinch uses 0.42/0.58 hysteresis so a held pinch cannot flicker
+
+SSE rather than WebSocket, matching the bridge's existing choice: the browser has
+EventSource built in and a hand-rolled WebSocket needs frame masking (a bug the
+bridge already hit once).
+
+Safety, both verified rather than assumed:
+- `--host 0.0.0.0` -> refuses to start, exits. This drives the user's camera.
+- bound to `127.0.0.1:8789`; LAN probe `192.168.100.97:8789` -> `000` refused.
+- CORS scoped to `http://127.0.0.1:8787` (present for that Origin, absent for
+  `http://evil.example`) — not `*`, because the stream carries hand positions.
+
+### Measurement, including a claim that had to be walked back
+First selftest reported **0 hands** and I recorded detection as unproven rather
+than claiming it worked. Later, with the service running as a systemd unit, the
+state endpoint reported **hands: 1** and stayed there:
+
+```
+t+1s hands=1 pinch=0.401 gesture=drag   t+7s hands=1 pinch=0.693 gesture=hover
+t+3s hands=1 pinch=0.386 gesture=fist   t+12s hands=1 pinch=0.557 gesture=hover
+```
+12/12 samples detected a hand, fps steady ~9.7, NRestarts frozen (not crash-looping).
+
+### `tools/check-gesture.py` — 9 checks, and it earned its keep
+Feeds synthetic landmarks through gesture.py's real `_pinch` / `_fingers_up`.
+It **failed 4/8 the first time** and every failure was a bug in the test, not the
+classifier:
+1. the finger loop wrote landmark 8 (index tip) *after* the pinch was placed,
+   silently overwriting it;
+2. "folded" landmark y-coords were inverted, so a fist read as four fingers up;
+3. the midpoint assertion still assumed 0.50 after the geometry changed;
+4. the "scale-free" assertion compared two *different* hands, which proves
+   nothing — replaced with a real scale-invariance test (x0.4, x2.0, x7.5).
+
+Final: pinch=0.111 (= 0.02 gap / 0.18 palm, hand-checked), open=0.801, 9/9 PASS.
+
+### Two bugs found by measuring, not by reading
+1. **SSE state frames never reached the UI.** The server wrote bare `data:` lines
+   with no `event:` name, so the browser delivers them as the default `message`
+   event; the client was listening for a named `"state"` event and silently never
+   fired. Symptom was a permanent "starting camera…".
+2. **`orb.rotateBy` looked undefined.** `orb` is module-scoped, so from the page
+   `orb` resolves to the `<div id="orb">` element. The gesture client is inside the
+   module and was always correct, but it was unmeasurable. Published
+   `window.helixOrb` so the chain can be spied on.
+
+End-to-end proof via a spy on `rotateBy` during a live hand:
+**4 calls**, deltas `[-0.028,0.009] [-0.051,0.043] [0.018,-0.083] [-0.030,-0.039]`,
+0 console errors. camera -> mediapipe -> SSE -> rotateBy is real.
+
+**Still unproven:** zoom. `zoomBy` fired 0 times because only one hand was ever in
+frame. The handler and `orb.zoomIn/zoomOut` exist in the measured API, but no
+two-hand event has been observed. Not claiming it works.
+
+### Camera contention — found, measured, fixed at the source
+`/dev/video0` is **single-client** on this box. With gesture control holding it,
+`/cam` got **0 frames** — but the bridge answered `200` with a correct
+multipart content-type and an empty body, so the `<img>` sat on "connecting…"
+forever: `load` never fired (no frame) and `error` never fired (the request had
+succeeded). A silently dead panel that looked like a starting camera.
+
+`bridge/server.py` now waits for the **first real frame** before committing to a
+200, and returns `503` with ffmpeg's own reason otherwise. One subtlety: `select()`
+reports a closed pipe as readable, so the first version passed a dead ffmpeg as a
+healthy frame and still returned 200 — it now requires actual bytes and checks
+`poll()` first.
+
+Both directions measured:
+- gesture running -> `503 camera unavailable: [in#0 ...] Error opening input:
+  Device or resource busy.`
+- gesture stopped -> `200`, **269 complete JPEGs** (SOI == EOI == multipart parts),
+  first frame header decodes to a real JPEG
+- UI now shows the error and resets the panel instead of hanging
+
+`_cam_kill_all()` only reaps PIDs the bridge itself spawned, so it never kills the
+gesture service.
+
+### Service
+`helix-gesture.service` (systemd --user, graphical-session.target, MemoryMax=600M,
+~150 MB measured). First attempt failed: ExecStart pointed at `~/tools/gesture.py`
+instead of `~/helix/tools/gesture.py`, and `graphical-session.target` *is* active
+here so that was never the cause.
+
+### Skipped
+- Two-hand zoom calibration (needs a real second hand to measure against).
+- Sharing one capture between `/cam` and gesture. Both want the same single-client
+  device; making them yield to each other is more machinery than the feature is
+  worth until someone actually wants both at once.

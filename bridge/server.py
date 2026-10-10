@@ -16,6 +16,7 @@ import json
 import mimetypes
 import os
 import re
+import select
 import shutil
 import sqlite3
 import subprocess
@@ -268,10 +269,43 @@ def camera_stream(handler, dev=None, size="320x240", fps=5):
             ["ffmpeg", "-hide_banner", "-loglevel", "error",
              "-f", "v4l2", "-video_size", size, "-framerate", str(fps),
              "-i", dev, "-f", "mpjpeg", "-q:v", "6", "-"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
     except FileNotFoundError:
         return handler.send_error(500, "ffmpeg not installed")
     CAM_PROCS.append(proc)
+    # Wait for the first frame BEFORE committing to a 200.
+    #
+    # /dev/video0 on this box is single-client, and gesture control holds it
+    # continuously as a systemd service. Measured: with gesture running, ffmpeg
+    # never appears in fuser for the device, exits immediately, and this
+    # endpoint used to answer 200 with a correct multipart content-type and zero
+    # frames. The <img> then sat on "connecting…" forever - load never fired
+    # (no frame) and error never fired (the request had succeeded). A silently
+    # dead panel that looked like a starting camera.
+    #
+    # Reporting 503 lets the existing img.onerror path in the UI say why.
+    # select() reports a CLOSED pipe as readable, so a read that returns EOF
+    # looks identical to real data. Wait for actual bytes, and check for exit
+    # first, or a dead ffmpeg passes as a healthy first frame.
+    first = b""
+    deadline = time.time() + 3.0
+    while time.time() < deadline and not first:
+        if proc.poll() is not None:
+            break
+        r, _, _ = select.select([proc.stdout], [], [], 0.25)
+        if r:
+            first = (proc.stdout.read1(65536)
+                     if hasattr(proc.stdout, "read1")
+                     else proc.stdout.read(65536))
+    if not first:
+        _cam_kill_all()
+        try:
+            lines = proc.stderr.read().decode("utf-8", "replace").splitlines()
+        except Exception:
+            lines = []
+        why = next((l.strip() for l in lines if l.strip()),
+                   "no frames from %s (held by another process?)" % dev)
+        return handler.send_error(503, "camera unavailable: %s" % why[:200])
     # HTTP/1.0 framing on purpose. Under HTTP/1.1 an endless body with no
     # Content-Length is sent as `transfer-encoding: chunked`, and browsers cannot
     # decode a chunked multipart image stream - the request came back 200 with
@@ -289,7 +323,7 @@ def camera_stream(handler, dev=None, size="320x240", fps=5):
     # fragment, there were 0 complete JPEGs in a 760KB capture, and the browser
     # correctly refused to decode it. curl "worked" only because it dumps bytes.
     SOI, EOI = b"\xff\xd8", b"\xff\xd9"
-    buf = b""
+    buf = first          # bytes already read while waiting for the first frame
     try:
         while True:
             chunk = proc.stdout.read(8192)

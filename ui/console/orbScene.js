@@ -18,7 +18,7 @@ function createOrbScene(container) {
   renderer.setSize(width, height);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.62;
+  renderer.toneMappingExposure = 0.8;
   container.appendChild(renderer.domElement);
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
@@ -38,9 +38,6 @@ function createOrbScene(container) {
     // threshold  <- raised: this is what stops the whole orb blooming
   );
   composer.addPass(bloom);
-  // Per-state bloom multiplier. The pulse in animate() scales this, so states
-  // change the glow without the loop hard-coding a value again.
-  let bloomBase = 0.30;
   const chromaticShader = {
     uniforms: {
       tDiffuse: { value: null },
@@ -83,16 +80,11 @@ function createOrbScene(container) {
   controls.maxDistance = MAX_DISTANCE;
   controls.zoomSpeed = 1.4;
   controls.enablePan = false;
-  // Cyan/teal holographic palette. These were #ffaa30 / #dd7700 / #553300 -
-  // a warm orange that, with additive text sprites and bloom on top, saturated
-  // to a solid orange ball. The reference core is a pale cyan particle sphere,
-  // so the palette moves cool and the brightest sprites go near-white so they
-  // read as individual points of light rather than a mass.
-  const C_BRIGHT = 0xd6f7ff;
-  const C_MID = 0x4fd8ee;
-  const C_FAINT = 0x14586b;
-  const C_HOT = 0xeafcff;
-  const C_DIM = 0x0d3a47;
+  const C_BRIGHT = 16755248;
+  const C_MID = 14513920;
+  const C_DIM = 8930304;
+  const C_FAINT = 5583616;
+  const C_HOT = 16764006;
   const orbGroup = new THREE.Group();
   scene.add(orbGroup);
   function lineMat(color, opacity = 1) {
@@ -554,37 +546,6 @@ function createOrbScene(container) {
   }
   const sphericalScratch = new THREE.Spherical();
   const offsetScratch = new THREE.Vector3();
-
-  /* ── explicit visual states ────────────────────────────────────────────
-     Requirements: the core must show what the app is ACTUALLY doing, not run
-     random motion. Each state only moves bloom, spin, ring speed and particle
-     brightness - cheap scalars the loop already reads - so switching state is
-     one assignment instead of rebuilding the scene.
-       idle      slow, dim            listening  brighter, faster, pulse ring
-       thinking  bright, fast rings   speaking   rhythmic pulse
-       task      strong + sweeps      shutdown   fades to near-dark
-  */
-  const STATES = {
-    idle:      { bloom: 0.30, spin: 0.35, ring: 0.5, dust: 0.7,  label: "IDLE" },
-    listening: { bloom: 0.48, spin: 0.9,  ring: 1.6, dust: 1.0,  label: "LISTENING" },
-    thinking:  { bloom: 0.58, spin: 1.6,  ring: 2.6, dust: 1.25, label: "THINKING" },
-    speaking:  { bloom: 0.52, spin: 0.7,  ring: 1.9, dust: 1.1,  label: "SPEAKING" },
-    task:      { bloom: 0.62, spin: 1.3,  ring: 2.2, dust: 1.2,  label: "EXECUTING" },
-    shutdown:  { bloom: 0.14, spin: 0.1,  ring: 0.15, dust: 0.35, label: "OFFLINE" }
-  };
-  let state = { ...STATES.idle };
-  let stateName = "idle";
-  function setState(name) {
-    const next = STATES[name];
-    if (!next) return false;
-    stateName = name;
-    state = { ...next };
-    bloomBase = next.bloom;
-    return true;
-  }
-  function getState() {
-    return stateName;
-  }
   function rotateBy(deltaTheta, deltaPhi) {
     offsetScratch.copy(camera.position).sub(controls.target);
     sphericalScratch.setFromVector3(offsetScratch);
@@ -623,35 +584,31 @@ function createOrbScene(container) {
     if (disposed) return;
     rafId = requestAnimationFrame(animate);
     const t = clock.getElapsedTime();
-    // Every rotation rate and effect below is scaled by the active state, so the
-    // core's motion reads as "idle" / "thinking" / "speaking" rather than
-    // looping identically no matter what the app is doing.
-    const SP = state.spin, RG = state.ring, DU = state.dust;
-    outerShell.rotation.y += 15e-4 * SP;
-    outerShell.rotation.x = Math.sin(t * 0.08 * SP) * 0.05;
-    panelGroup.rotation.y += 18e-4 * SP;
-    panelGroup.rotation.x = Math.sin(t * 0.08 * SP + 0.5) * 0.04;
-    shell2.rotation.y -= 1e-3 * SP;
-    shell2.rotation.z = Math.sin(t * 0.12 * SP) * 0.03;
-    innerCore.rotation.y -= 5e-3 * SP;
-    innerCore.rotation.z += 2e-3 * SP;
-    innerCore.rotation.x = Math.cos(t * 0.1 * SP) * 0.08;
-    icoWire.rotation.x += 8e-3 * SP;
-    icoWire.rotation.y += 0.012 * SP;
-    const wave1 = Math.sin(t * 1.2 * SP);
-    const wave3 = Math.pow(Math.max(0, Math.sin(t * 0.4 * SP)), 5);
-    const wave4 = Math.pow(Math.max(0, Math.sin(t * 0.7 * SP + 2)), 8);
-    const fadeOut = Math.pow(Math.max(0, Math.sin(t * 0.25 * SP)), 3);
-    const surge = (wave3 * 1.5 + wave4 * 2) * DU;
+    outerShell.rotation.y += 15e-4;
+    outerShell.rotation.x = Math.sin(t * 0.08) * 0.05;
+    panelGroup.rotation.y += 18e-4;
+    panelGroup.rotation.x = Math.sin(t * 0.08 + 0.5) * 0.04;
+    shell2.rotation.y -= 1e-3;
+    shell2.rotation.z = Math.sin(t * 0.12) * 0.03;
+    innerCore.rotation.y -= 5e-3;
+    innerCore.rotation.z += 2e-3;
+    innerCore.rotation.x = Math.cos(t * 0.1) * 0.08;
+    icoWire.rotation.x += 8e-3;
+    icoWire.rotation.y += 0.012;
+    const wave1 = Math.sin(t * 1.2);
+    const wave3 = Math.pow(Math.max(0, Math.sin(t * 0.4)), 5);
+    const wave4 = Math.pow(Math.max(0, Math.sin(t * 0.7 + 2)), 8);
+    const fadeOut = Math.pow(Math.max(0, Math.sin(t * 0.25)), 3);
+    const surge = wave3 * 1.5 + wave4 * 2;
     const coreScale = 1 + surge + Math.sin(t * 5) * 0.05;
     coreSphere.scale.setScalar(coreScale);
     const coreOpacity = Math.max(
       0,
       (0.08 + wave1 * 0.05 + surge * 0.2) * (1 - fadeOut * 0.95)
     );
-    coreSphereMat.opacity = Math.min(0.34, coreOpacity);
+    coreSphereMat.opacity = Math.min(0.6, coreOpacity);
     glowSphere.scale.setScalar(1 + surge * 0.8);
-    glowSphereMat.opacity = Math.max(0, (0.015 + surge * 0.05) * (1 - fadeOut * 0.9));
+    glowSphereMat.opacity = Math.max(0, (0.03 + surge * 0.08) * (1 - fadeOut * 0.9));
     icoWire.scale.setScalar(1 + surge * 0.6);
     icoWireMat.opacity = Math.min(1, 0.5 + surge * 0.4);
     debris.forEach((d) => {
@@ -673,7 +630,7 @@ function createOrbScene(container) {
     for (const [group, mult] of driftGroups) {
       group.children.forEach((sp) => {
         const u = sp.userData;
-        u.theta += u.speed * mult * DU;
+        u.theta += u.speed * mult;
         sp.position.set(
           u.r * Math.sin(u.phi) * Math.cos(u.theta),
           u.r * Math.cos(u.phi),
@@ -681,17 +638,17 @@ function createOrbScene(container) {
         );
       });
     }
-    const scanY1 = Math.sin(t * 0.4 * RG) * R1;
+    const scanY1 = Math.sin(t * 0.4) * R1;
     scanRing1.position.y = scanY1;
     const scanS1 = Math.sqrt(Math.max(0, R1 * R1 - scanY1 * scanY1)) / R1;
     scanRing1.scale.set(scanS1, scanS1, 1);
     scanRing1.material.opacity = 0.2 * scanS1;
-    const scanY2 = Math.sin(t * 0.6 * RG + 2) * R3;
+    const scanY2 = Math.sin(t * 0.6 + 2) * R3;
     scanRing2.position.y = scanY2;
     const scanS2 = Math.sqrt(Math.max(0, R3 * R3 - scanY2 * scanY2)) / R3;
     scanRing2.scale.set(scanS2, scanS2, 1);
     scanRing2.material.opacity = 0.15 * scanS2;
-    dustPoints.rotation.y += 2e-4 * DU;
+    dustPoints.rotation.y += 2e-4;
     flickerTimer += 0.016;
     if (flickerTimer > 0.1) {
       flickerTimer = 0;
@@ -701,12 +658,7 @@ function createOrbScene(container) {
         }
       });
     }
-    // The animate loop was writing strength = 1.6 + sin(t)*0.3 here every frame,
-    // which silently undid the 0.7 set in the constructor above - that, plus the
-    // warm palette, is why the orb rendered as a solid orange sun. Keep the pulse
-    // centred on the configured value and let setState() scale it, so the glow
-    // tracks what the app is actually doing.
-    bloom.strength = bloomBase * (0.9 + Math.sin(t * 0.8) * 0.12);
+    bloom.strength = 1.6 + Math.sin(t * 0.8) * 0.3;
     chromaticPass.uniforms.uTime.value = t;
     controls.update();
     composer.render();
@@ -744,9 +696,6 @@ function createOrbScene(container) {
   return {
     rotateBy,
     zoomBy,
-    setState,
-    getState,
-    states: Object.keys(STATES),
     zoomIn: () => zoomBy(0.65),
     zoomOut: () => zoomBy(1.55),
     resetView,

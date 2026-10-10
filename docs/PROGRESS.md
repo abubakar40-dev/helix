@@ -4791,3 +4791,45 @@ user's session, which needs their call.
   is closed.
 - Reduced-effects mode: the orb already degrades (shader-free fallback message,
   and `orbScene` fails soft to an error card), but there is no quality switch.
+
+## Correction: the orb was reverted to the previous UI
+
+User: "keep in mind to keep the orb same as before, from the previous ui".
+
+That was my mistake, not a bug. The rebuild prompt asked for the reference's
+**layout, panel geometry and composition**; I went ahead and restyled the orb
+anyway - swapping its warm palette to cyan and reining in the bloom. Nobody
+asked for that, and there is already a standing rule about leaving the orb
+alone.
+
+`ui/console/orbScene.js` restored byte-identical to the pre-rebuild version:
+
+```
+$ git diff HEAD~1 --quiet -- ui/console/orbScene.js   -> identical
+```
+
+`ui/voice-core/` confirmed still untouched (standing rule intact).
+
+### One real break the revert caused, and it was caught by checking
+The console called `orb.getState()` unguarded on the START AI click, and the
+restored orb does not export `getState`/`setState` - that would have thrown a
+TypeError the first time anyone pressed the button. Removed the state-driving
+calls rather than leaving dead ones; the IDLE / LISTENING / N WORKING badge text
+is DOM and still comes from real `/state` data.
+
+Verified the remaining calls against what the orb actually exports:
+
+```
+console calls : rotateBy, zoomIn, zoomOut
+orb exports   : dispose, resetView, rotateBy, zoomBy, zoomIn, zoomOut
+UNRESOLVED    : none - all resolve
+```
+
+Everything else from the rebuild stands: layout and panel chrome, the
+`id="top"` duplicate that stopped the connectors drawing, Agent Town art, and
+the console opening on real tool calls. Only the orb's appearance went back.
+
+Re-measured after the revert: orb panel mean luma 144.4, hot>200 31.4%, versus
+134.5 / 23.8% pre-rebuild. The orb is animated and its bloom runs
+`1.6 + sin(t)*0.3`, so any two captures land on a different phase - the
+identical file hash is the real evidence, not a single frame's brightness.

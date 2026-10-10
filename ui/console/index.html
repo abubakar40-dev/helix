@@ -545,15 +545,10 @@ addEventListener("resize",drawLinks);
 setTimeout(drawLinks,60);
 startPulses();
 
-/* ── orb visual state ─────────────────────────────────────────
-   The scene exposes idle/listening/thinking/speaking/task/shutdown.
-   This is the single place that decides which one is showing. */
+/* The orb scene is kept exactly as it was in the previous UI, so there is no
+   setState() to drive - only the badge text changes, which comes from real
+   /state data. sessionOn is the human's START AI toggle. */
 let sessionOn = false;
-function setOrbState(name){
-  if (orb && orb.setState) orb.setState(name);
-  const el = $("#orbstate");
-  if (el) el.dataset.state = name;
-}
 
 /* ── cortex counts ─────────────────────────────────────── */
 async function cortex(){
@@ -592,7 +587,6 @@ async function state(){
     // Anything else would be decoration pretending to be status.
     const anyW = busy > 0;
     $("#orbDot").className = "dot " + (anyW ? "warn" : "on");
-    setOrbState(anyW ? "task" : (sessionOn ? "listening" : "idle"));
     $("#orbTxt").textContent = anyW ? `${busy} WORKING`
                          : (sessionOn ? "LISTENING" : "IDLE");
     $("#coreState").textContent = ps.length + " agents · " + busy + " working";
@@ -921,8 +915,7 @@ $("#chatBtn").onclick = ()=> log("text chat not built yet — voice/whatsapp are
 $("#startbtn").onclick = ()=>{
   sessionOn = $("#startbtn").classList.toggle("stop");
   $("#startbtn").textContent = sessionOn ? "STOP AI" : "START AI";
-  if (orb && orb.getState() === "shutdown") orb.setState("idle");
-  state();   // re-derives listening vs idle from the flag just flipped
+  state();   // re-derives LISTENING vs IDLE from the flag just flipped
   log(sessionOn ? "session requested — voice core runs at /voice-core/"
                 : "session released","info");
 };

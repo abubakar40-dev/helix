@@ -7,14 +7,30 @@
 // Brightened. At these values the whole office measured as near-black on screen:
 // the palette sat around #26303c on a #05080d page, and at the panel's real size
 // the town read as an empty black box. A screenshot showed it; the DOM never did.
+// These were light slate greys (#5a6c80 floor, #6c8098 desk). Measured on a
+// screenshot they rendered as a washed-out blockout, not a sci-fi office: the
+// whole floor sat at one mid value with no dark to contrast against. The room
+// moves to a deep navy base so the lit desks, cyan monitors and warm wood
+// corridor actually read as light sources.
 const PAL = {
-  floorA:"#5a6c80", floorB:"#53657a", wood:"#8a7052", rug:"#3d5268",
-  wall:"#2c3c4e", wallTop:"#3b5068", desk:"#6c8098", deskTop:"#8098b0",
-  screen:"#bdeeff", screenDim:"#3a6c90", chair:"#54677d",
-  plant:"#4cbd7c", pot:"#9a7a56", cooler:"#6fc7dd",
-  paper:"#f2f8ff", frame:"#6a7d90",
-  glow:"#9fe3ff", lamp:"#ffd9a0"
+  floorA:"#2a3852", floorB:"#25324a", wood:"#7d5f3f", rug:"#31445e",
+  wall:"#18212f", wallTop:"#212f45", desk:"#3c4f6d", deskTop:"#4a6084",
+  screen:"#9fe9ff", screenDim:"#2f5f80", chair:"#3a4c66",
+  plant:"#3d9c68", pot:"#8a6a4a", cooler:"#5fb8d0",
+  paper:"#e8f1fb", frame:"#4e6280",
+  glow:"#7fd8ff", lamp:"#ffd9a0", dark:"#0d1420"
 };
+
+// Nine distinct standing spots in the lower half. Idle agents used to target
+// 150 + (desk%4)*22, which put five of them on the same 16px of floor - the
+// names overlapped and the sprites stacked into a smear.
+// Varied heights, not one row: a straight line of nine sprites along the bottom
+// read as a queue. These are spread across the floor and kept clear of both desk
+// rows (y=40 and y=150), the wood corridor (y=96..122) and the rug.
+const LOUNGE = [
+  {x:34,  y:146}, {x:72,  y:174}, {x:110, y:190}, {x:152, y:196}, {x:196, y:188},
+  {x:238, y:170}, {x:280, y:146}, {x:300, y:100}, {x:162, y:134}
+];
 
 // 9 agents, 9 distinct shirts. Helix (CEO) gets the brightest.
 const LOOK = {
@@ -101,13 +117,20 @@ export function createTown(canvas, onStatus){
       box(fx,fy,15,12,PAL.frame); R(fx+2,fy+2,11,8,PAL.paper);
       R(fx+3,fy+3,9,1,"#9fb3c8");
     });
-    // ceiling light pools over the desk rows - cheap depth cue
+    // Ceiling light pools over the desk rows. On the old mid-grey floor these
+    // were invisible; against the new navy base they give the room its depth
+    // and make the desk row the brightest thing in the frame.
     [60,158,258].forEach(cx=>{
-      for(let r=13;r>0;r--) {
-        ctx.fillStyle = "rgba(255,217,160," + (0.030 - r*0.0016).toFixed(4) + ")";
+      for(let r=15;r>0;r--) {
+        ctx.fillStyle = "rgba(255,220,170," + (0.050 - r*0.0026).toFixed(4) + ")";
         ctx.fillRect(cx-r, 20-r*0.5, r*2, r);
       }
     });
+    // and a cool fill from the corridor so the lower half is not pitch black
+    for(let r=16;r>0;r--){
+      ctx.fillStyle = "rgba(120,200,240," + (0.020 - r*0.0010).toFixed(4) + ")";
+      ctx.fillRect(168-r, 104-r*0.6, r*2, r);
+    }
     // rug
     R(120,150,90,40,PAL.rug); R(124,154,82,32,"#46596e");
     for(let x=126;x<204;x+=6) R(x,156,3,32,"#00000018");
@@ -120,8 +143,8 @@ export function createTown(canvas, onStatus){
     R(d.x-5,d.y-6,10,7,PAL.screenDim);
     R(d.x-4,d.y-5,8,5,PAL.screen);
     R(d.x-2,d.y-4,4,1,"#ffffffcc");
-    ctx.fillStyle = "rgba(159,227,255,0.16)";
-    ctx.fillRect(d.x-9, d.y-3, 18, 7);        // glow spill on the desk surface
+    ctx.fillStyle = "rgba(159,227,255,0.30)";
+    ctx.fillRect(d.x-11, d.y-4, 22, 9);       // glow spill on the desk surface
     // keyboard + paper
     R(d.x-6,d.y+1,12,2,"#2b3644"); R(d.x+8,d.y-2,4,5,PAL.paper);
     // desk number plate
@@ -174,52 +197,60 @@ export function createTown(canvas, onStatus){
     }
   }
 
-  // ── the sprite: 8 wide x 14 tall pixel person ──────────────────────────────
+  // ── the sprite ───────────────────────────────────────────────────────────
+  /* Was 8x14 virtual px, which at the panel's real fit (1.9x) rendered as a 15x27
+     sliver - a coloured pillar, not a person. Now 12x20 (~23x38 on screen):
+     head, hair, shirt, arms and legs are individually readable, which is what
+     makes the town look inhabited rather than populated with tally marks. */
+  const SW = 12, SH = 20;
   function drawSprite(a, frame, sitting){
     const {shirt, hair, skin} = LOOK[a.look] || LOOK.helix;
-    const x = Math.round(a.x)-4, y = Math.round(a.y)-14;
-    const flip = a.dir < 0;                      // face left/right
+    const x = Math.round(a.x) - SW/2, y = Math.round(a.y) - SH;
+    const flip = a.dir < 0;
     ctx.save();
-    if (flip){ ctx.translate(x+8,0); ctx.scale(-1,1); ctx.translate(-(x+8),0); }
+    if (flip){ ctx.translate(x+SW,0); ctx.scale(-1,1); ctx.translate(-(x+SW),0); }
 
-    // shadow
-    ctx.fillStyle="#00000055"; ctx.fillRect(x+1, y+13, 6, 2);
+    // contact shadow, wider than the body so it anchors to the floor
+    ctx.fillStyle="#00000066"; ctx.fillRect(x+1, y+SH-2, SW-2, 2);
 
     if (sitting){
-      R(x+2,y+8,4,4,shirt);            // torso
-      R(x+2,y+11,4,2,"#2b3644");       // legs tucked under desk
-      R(x+1,y+8,1,3,skin); R(x+6,y+8,1,3,skin); // arms forward (typing)
-      // typing hands alternate on the agent's own phase
-      if (Math.floor((a.phase||0)*2)%2){ R(x,y+7,3,2,skin); R(x+5,y+7,3,2,skin); }
-      else                           { R(x+1,y+7,3,2,skin); R(x+4,y+7,3,2,skin); }
-      R(x+1,y+1,6,6,skin);             // head
-      R(x+1,y+0,6,3,hair);             // hair
-      R(x+1,y+4,6,1,"#00000022");      // jaw shadow
+      R(x+3,y+9,6,7,shirt);              // torso
+      R(x+3,y+9,6,1,"#ffffff22");        // shoulder light
+      R(x+3,y+16,6,2,"#2b3644");         // lap under the desk
+      R(x+2,y+11,1,5,skin); R(x+9,y+11,1,5,skin);   // arms down to the keys
+      const tap = Math.floor((a.phase||0)*2)%2;     // typing hands alternate
+      if (tap){ R(x+1,y+14,3,2,skin); R(x+8,y+14,3,2,skin); }
+      else    { R(x+1,y+15,3,2,skin); R(x+8,y+15,3,2,skin); }
     } else {
-      // legs: 2-frame walk cycle
       const step = Math.floor(a.phase||0)%2 ? 1 : -1;
-      R(x+2,y+8,4,5,shirt);            // torso
-      R(x+1,y+8,1,4,skin); R(x+6,y+8,1,4,skin);   // arms swinging
-      R(x+2,y+13,2,1,"#2b3644"); R(x+4+step,y+13,2,1,"#2b3644");  // legs
-      R(x+1,y+1,6,6,skin);             // head
-      R(x+1,y+0,6,3,hair);
+      R(x+3,y+9,6,7,shirt);              // torso
+      R(x+3,y+9,6,1,"#ffffff22");
+      R(x+2,y+10,1,5,skin); R(x+9,y+10,1,5,skin);   // arms swinging
+      R(x+3,y+16,2,3,"#2b3644");         // left leg
+      R(x+7+step,y+16,2,3,"#2b3644");    // right leg, offset by the walk phase
+      R(x+3,y+19,2,1,"#1a222c"); R(x+7+step,y+19,2,1,"#1a222c");  // shoes
     }
+    // head last so it sits over the shoulders
+    R(x+3,y+2,6,7,skin);
+    R(x+3,y+1,6,4,hair);                 // hair cap
+    R(x+2,y+2,1,4,hair); R(x+9,y+2,1,4,hair);      // sideburns
+    R(x+3,y+7,6,1,"#00000026");          // jaw shadow
     ctx.restore();
 
     // status pip above the head
     const st = a.status;
     const col = st==="working" ? "#f59e0b" : st==="blocked" ? "#ef4444" : "#2a3a49";
-    R(x+3,y-4,2,2,col);
-    if (st==="working"){ R(x+3,y-5,2,1,"#f59e0b66"); R(x+3,y-6,2,1,"#f59e0b33"); }
+    R(x+5,y-3,2,2,col);
+    if (st==="working"){ R(x+5,y-4,2,1,"#f59e0b66"); R(x+5,y-5,2,1,"#f59e0b33"); }
 
-    // name + task
+    // name, and the task when the agent is actually working on one
     ctx.font = "7px monospace"; ctx.textAlign="center";
     ctx.fillStyle = st==="working" ? "#e8f2fb" : "#8fa3b5";
-    ctx.fillText(a.name, x+4, y-8);
+    ctx.fillText(a.name, x+SW/2, y-6);
     if (st==="working" && a.task){
       ctx.fillStyle="#5c6b7a"; ctx.font = "6px monospace";
       const t = a.task.length>22 ? a.task.slice(0,21)+"…" : a.task;
-      ctx.fillText(t, x+4, y-14);
+      ctx.fillText(t, x+SW/2, y-12);
     }
     ctx.textAlign="left";
   }
@@ -278,8 +309,8 @@ export function createTown(canvas, onStatus){
       if (a.status==="idle" && !a.walk && (a.look==="pc" || a.look==="career")){
         ctx.fillStyle="#5c6b7a";
         const bob = Math.sin((frame/18)+a.x)*1.5;
-        ctx.fillText("z", a.x+5, a.y-20+bob);
-        ctx.fillText("z", a.x+8, a.y-24+bob);
+        ctx.fillText("z", a.x+6, a.y-24+bob);
+        ctx.fillText("z", a.x+10, a.y-29+bob);
       }
     }
   }
@@ -318,8 +349,8 @@ export function createTown(canvas, onStatus){
       const target = seatFor(a.desk, st);
       if (st === "working" || st === "blocked"){ a.tx = target.x; a.ty = target.y; }
       else {
-        a.tx = 150 + (a.desk%4)*22;
-        a.ty = 150 + (Math.floor(a.desk/4)%2)*10;
+        const sp = LOUNGE[a.desk % LOUNGE.length];
+        a.tx = sp.x; a.ty = sp.y;
       }
       a.status = st;
       a.task = p.task ? (p.task.title || p.task) : null;

@@ -12,298 +12,314 @@
 </script>
 <style>
 :root{
-  --bg:#05080d; --panel:#0a1017; --panel2:#0d151e; --line:#16222e;
+  --bg:#060910; --panel:#0a1017; --panel2:#0c141d; --line:#16222e; --line2:#223346;
   --ink:#c9d6e2; --dim:#5c6b7a; --hi:#e8f2fb;
   --cy:#22d3ee; --am:#f59e0b; --gr:#22c55e; --rd:#ef4444; --vi:#a78bfa;
-  --r:10px;
+  /* the reference chamfers every panel corner; this is the cut size */
+  --bevel:polygon(11px 0,calc(100% - 11px) 0,100% 11px,100% calc(100% - 11px),
+                  calc(100% - 11px) 100%,11px 100%,0 calc(100% - 11px),0 11px);
 }
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
 body{
-  background:var(--bg); color:var(--ink); overflow:hidden;
+  background:var(--bg);color:var(--ink);overflow:hidden;
   font:12px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-  display:flex; flex-direction:column;
+  display:flex;flex-direction:column;
   -webkit-font-smoothing:antialiased;
 }
-/* ── title bar ─────────────────────────────────────────── */
-/* 35px exactly: the reference title bar is 0,0 1509x35 and must not eat
-   workspace height. */
-#top{
-  height:35px;flex:0 0 35px;display:flex;align-items:center;gap:12px;
-  padding:0 14px;border-bottom:1px solid var(--line);background:#070c12;
+
+/* ── title bar (reference 1509x47) ─────────────────────────────── */
+#titlebar{
+  height:47px;flex:0 0 47px;display:flex;align-items:center;gap:10px;
+  padding:0 14px;background:#070c12;border-bottom:1px solid var(--line);
 }
-#brand{font-weight:700;letter-spacing:.14em;color:var(--hi)}
-#brand b{color:var(--cy)}
-.ver{margin-left:auto;color:var(--dim);font-size:11px;display:flex;gap:14px;align-items:center}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--dim);display:inline-block}
+#brand{
+  display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:.18em;
+  color:var(--hi);font-size:13px;padding-right:14px;
+  border-right:1px solid var(--line);height:22px;
+}
+#brand .mark{
+  width:16px;height:16px;border-radius:3px;flex:0 0 16px;
+  background:conic-gradient(from 210deg,var(--cy),#6366f1,var(--vi),var(--cy));
+  box-shadow:0 0 12px -2px var(--cy);
+}
+.tbtn{
+  display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:5px;cursor:pointer;
+  background:#0b141c;border:1px solid var(--line);color:var(--ink);font:10px/1 inherit;
+  letter-spacing:.12em;transition:.15s;
+}
+.tbtn:hover{border-color:var(--cy);color:var(--cy)}
+.tbtn .gl{color:var(--dim)}
+#tbRight{margin-left:auto;display:flex;align-items:center;gap:14px}
+#tbRight .ver{color:var(--dim);font-size:11px;letter-spacing:.08em}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--dim);display:inline-block;flex:0 0 7px}
 .dot.on{background:var(--gr);box-shadow:0 0 8px var(--gr)}
 .dot.warn{background:var(--am)}.dot.err{background:var(--rd)}
 
-/* ── grid ──────────────────────────────────────────────── */
-/* Proportions measured off the reference screenshot rather than eyeballed:
-     left 310/1500 = 20.7% | centre 670/1500 = 44.7% | right 465/1500 = 31.0%
-   Mine were 22.4 / 51.5 / 25.4, so the chat column was 5.6 points too narrow
-   and the centre 6.8 points too wide. fr units (not %) so the 8px gaps are
-   absorbed proportionally instead of eating into the last column. */
-/* Reference 1509x812: left 12,47 316x752 | centre 340,47 643x752 | right 995,47 504x752
-   => 12px outer margin, 12px gaps, tracks 316 / 643 / 504. The left rail spans
-   BOTH rows; the centre is an upper composition + Agent Town (307 / 433 with a
-   12px gap = 752). Rows use fr so the split survives other viewport heights. */
+/* ── workspace grid ───────────────────────────────────────────────
+   Reference 1509x812: left 12,47 316x752 | centre 340,47 643x752 |
+   right 995,47 504x752. fr units, not %, because % resolves against the
+   content box and overflows by the gap width. */
 main{
-  flex:1;min-height:0;display:grid;gap:12px;padding:12px 10px 12px 12px;
-  /* fr, not percentages: percentages resolve against the CONTENT box (1485px),
-     not against the post-gap width, so they overflow by the gap width. fr
-     divides the true post-gap space and lands the left column on 316 exactly,
-     with centre/right within 1px. */
+  flex:1;min-height:0;display:grid;gap:12px;padding:12px;
   grid-template-columns:minmax(0,316fr) minmax(0,643fr) minmax(0,504fr);
-  grid-template-rows:minmax(0,41.43fr) minmax(0,58.57fr);
-  grid-template-areas:"left top console" "left town console";
+  grid-template-rows:minmax(0,307fr) minmax(0,433fr);
+  grid-template-areas:"left core console" "left town console";
 }
-#left,#top,#town,#console{min-width:0;min-height:0}
-#left{grid-area:left} #top{grid-area:top}
+#left,#core,#town,#console{min-width:0;min-height:0}
+#left{grid-area:left} #core{grid-area:core}
 #town{grid-area:town} #console{grid-area:console}
 
+/* ── bevelled panel ──────────────────────────────────────────────
+   clip-path cuts the corner, but it also cuts the border with it, so the
+   visible outline is a ::before ring inset by -1px behind the fill. */
 .panel{
-  background:linear-gradient(180deg,var(--panel2),var(--panel));
-  border:1px solid var(--line);border-radius:var(--r);
+  position:relative;background:linear-gradient(180deg,var(--panel2),var(--panel));
   display:flex;flex-direction:column;min-height:0;overflow:hidden;
-  box-shadow:0 1px 0 #ffffff08 inset, 0 8px 24px #0008;
+  box-shadow:0 10px 30px #0009, 0 1px 0 #ffffff07 inset;
+}
+.panel::before{
+  content:"";position:absolute;inset:-1px;z-index:-1;
+  clip-path:var(--bevel);background:var(--line);pointer-events:none;
 }
 .ph{
   flex:0 0 auto;display:flex;align-items:center;gap:8px;
-  padding:7px 10px;border-bottom:1px solid var(--line);
-  font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
+  padding:8px 12px;border-bottom:1px solid var(--line);
+  font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);
+  background:#070c12aa;
 }
-/* Reference console header is 47px tall (995,47 504x47). */
 #console .ph{height:47px;flex:0 0 47px}
 .ph .tag{color:var(--cy)}
+.ph .tools{margin-left:auto;display:flex;gap:6px;align-items:center}
+.icobtn{
+  width:24px;height:24px;border-radius:5px;cursor:pointer;display:grid;place-items:center;
+  background:#0b141ccc;border:1px solid var(--line);color:var(--dim);font-size:12px;
+}
+.icobtn:hover{border-color:var(--cy);color:var(--cy)}
 .pb{flex:1;min-height:0;position:relative}
 
-/* ── upper centre ─────────────────────────────────────
-   Reference: nodes at x=358 (18px into the 643 column) y=88 (41px down), 142 wide,
-   cards 39 tall with 21px gaps. Orb panel x=653 (313 across), y=54 (7 down),
-   299x286, leaving 31px clear on the right. Asymmetric on purpose - the orb is
-   NOT centred, and the node cards must not stretch across the column. */
-#top{position:relative;display:flex;align-items:flex-start;
+/* ── centre: node pills + connectors + core ─────────────────────── */
+#core{position:relative;display:flex;align-items:flex-start;
   justify-content:space-between;padding:7px 31px 0 18px}
-#nodes{display:flex;flex-direction:column;gap:21px;width:142px;flex:0 0 142px;margin-top:34px}
-#nodes .node{height:39px;box-sizing:border-box}
+#nodes{display:flex;flex-direction:column;gap:21px;width:150px;flex:0 0 150px;margin-top:31px}
 .node{
-  display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;
-  background:#0c141c;border:1px solid var(--nc,var(--line));
-  box-shadow:0 0 14px -6px var(--nc);position:relative;
+  --nc:var(--cy);
+  display:flex;align-items:center;gap:8px;height:36px;padding:0 10px 0 9px;
+  background:linear-gradient(90deg,#0f1b26,#0b131b);
+  border-left:2px solid var(--nc);
+  box-shadow:0 0 16px -8px var(--nc);
+  /* angled left cap and a notched right edge, matching the reference pill */
+  clip-path:polygon(0 0,100% 0,100% 78%,calc(100% - 11px) 100%,0 100%);
 }
-.node .ic{width:20px;height:20px;display:grid;place-items:center;border-radius:5px;
-  background:#0006;border:1px solid var(--nc);color:var(--nc);font-size:11px}
-.node .lb{flex:1;letter-spacing:.14em;font-size:10.5px;color:var(--hi)}
+.node .ic{
+  width:21px;height:21px;flex:0 0 21px;display:grid;place-items:center;border-radius:5px;
+  background:#0007;border:1px solid var(--nc);color:var(--nc);font-size:11px;
+}
+.node .lb{flex:1;letter-spacing:.16em;font-size:10px;color:var(--hi)}
 .node .ct{font-variant-numeric:tabular-nums;color:var(--nc);font-weight:700;font-size:13px}
-.node .pip{position:absolute;right:-3px;top:50%;width:6px;height:6px;margin-top:-3px;
-  border-radius:50%;background:var(--nc);box-shadow:0 0 8px var(--nc)}
-#links{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
+.node .pip{width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:var(--nc);
+  box-shadow:0 0 8px var(--nc)}
+#links{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;overflow:visible}
 #orbwrap{
-  width:299px;height:286px;flex:0 0 299px;border-radius:var(--r);position:relative;
-  overflow:hidden;border:1px solid var(--line);
-  background:radial-gradient(120% 120% at 50% 40%,#121b26 0%,#070c12 70%);
-  box-shadow:0 8px 30px #0009, 0 1px 0 #ffffff08 inset;
+  width:299px;height:286px;flex:0 0 299px;position:relative;overflow:hidden;
+  clip-path:var(--bevel);
+  background:radial-gradient(120% 120% at 50% 38%,#0e1a26 0%,#060b11 72%);
+  box-shadow:0 10px 34px #000a;
+  z-index:1;
+}
+#orbwrap::before{
+  content:"";position:absolute;inset:-1px;z-index:-1;
+  clip-path:var(--bevel);background:var(--line);pointer-events:none;
 }
 #orb{position:absolute;inset:0}
 #orbstate{
-  position:absolute;top:9px;left:9px;display:flex;align-items:center;gap:6px;
-  padding:3px 9px;border-radius:99px;background:#000a;border:1px solid var(--line);
-  font-size:10px;letter-spacing:.16em;color:var(--dim)
+  position:absolute;top:10px;left:12px;display:flex;align-items:center;gap:6px;
+  padding:3px 10px;background:#0009;border:1px solid var(--line);border-radius:99px;
+  font-size:9.5px;letter-spacing:.18em;color:var(--ink);z-index:2;
 }
-#orbstate .dot{width:6px;height:6px}
+#orbstate .dot{width:6px;height:6px;flex:0 0 6px}
+#coreState{color:var(--dim);letter-spacing:.1em}
 #startbtn{
-  position:absolute;left:50%;bottom:12px;transform:translateX(-50%);
-  padding:7px 30px;border-radius:6px;cursor:pointer;
-  background:#0b1a22;border:1px solid var(--cy);color:var(--cy);
-  font:600 10.5px/1 inherit;letter-spacing:.22em;
-  box-shadow:0 0 18px -6px var(--cy);transition:.15s;
+  position:absolute;left:50%;bottom:14px;transform:translateX(-50%);z-index:2;
+  padding:9px 34px;cursor:pointer;background:#08151c;color:var(--cy);
+  border:1px solid var(--cy);font:600 10.5px/1 inherit;letter-spacing:.26em;
+  clip-path:polygon(12px 0,calc(100% - 12px) 0,100% 50%,calc(100% - 12px) 100%,12px 100%,0 50%);
+  box-shadow:0 0 20px -6px var(--cy);transition:.15s;
 }
-#startbtn:hover{background:#0e2632;box-shadow:0 0 22px -4px var(--cy)}
-#startbtn.stop{border-color:var(--rd);color:var(--rd);box-shadow:0 0 18px -6px var(--rd)}
+#startbtn:hover{background:#0d2530;box-shadow:0 0 26px -4px var(--cy)}
+#startbtn.stop{border-color:var(--rd);color:var(--rd);box-shadow:0 0 20px -6px var(--rd)}
 
-/* ── left rail ─────────────────────────────────────────── */
-/* Reference: rail is 12,47 316x752 but the panels inside are 28,62 284x137 -
-   i.e. inset 16px each side, 15px top, 13px bottom. The rail is NOT flush. */
-#left{display:flex;flex-direction:column;gap:13px;min-height:0;
-  padding:15px 16px 13px}
-/* The globe is the flexible one: on a normal laptop window the left rail is
-   ~640px and this gets ~380px, which is where its own HUD becomes readable.
-   The mins are set so a SHORT window degrades instead of overflowing - three
-   stacked panels need ~340px and the harness viewport is only 554px tall. */
+/* ── left rail ──────────────────────────────────────────────────── */
+#left{display:flex;flex-direction:column;gap:12px;min-height:0}
+#camPanel{flex:137 1 0;min-height:76px}
 #globePanel{flex:427 1 0;min-height:150px}
-#hlPanel{flex:134 1 0;min-height:64px;max-height:none}
-
-/* Enough vertical room: give the globe real space instead of a cramped strip. */
-@media (min-height:820px){
-  #globePanel{min-height:260px}
-}
-/* Very short windows: the headlines list is the least useful of the three, so it
-   gives up its space first rather than pushing the others off-screen. */
-@media (max-height:620px){
-  #hlPanel{min-height:52px}
-  #camPanel{min-height:70px}
-  #globePanel{min-height:110px}
-}
-#headlines{overflow:auto;padding:4px 10px 8px;flex:1 1 auto}
-#headlines .it{display:flex;gap:8px;padding:5px 0;border-bottom:1px solid #101923}
+#hlPanel{flex:134 1 0;min-height:64px}
+#camPanel .pb{background:#05080c}
+#camFeed{width:100%;height:100%;object-fit:cover;display:block}
+#camOff,#camErr{position:absolute;inset:0;display:grid;place-content:center;
+  color:var(--dim);font-size:9.5px;letter-spacing:.16em;text-align:center;padding:8px}
+/* An author `display` rule beats the UA stylesheet's [hidden]{display:none}, so
+   the overlay stays painted on top of the live feed. Re-assert it. */
+#camOff[hidden],#camErr[hidden]{display:none}
+#camErr{color:var(--rd);letter-spacing:0;font-size:10px}
+#camPanel button{text-transform:uppercase}
+#camPanel button.on{border-color:var(--rd);color:var(--rd)}
+.mini{margin-left:6px;padding:2px 8px;border-radius:4px;cursor:pointer;
+  background:#0b141c;border:1px solid var(--line);color:var(--dim);font-size:9px;letter-spacing:.12em}
+.mini.live{border-color:var(--gr);color:var(--gr)}
+.mini.arm{border-color:var(--am);color:var(--am)}
+#gestStatus{position:absolute;left:10px;bottom:6px;font-size:9px;letter-spacing:.1em;
+  color:var(--dim);pointer-events:none;text-shadow:0 0 4px #000}
+#globe{position:absolute;inset:0;border:0;width:100%;height:100%;background:#04070c}
+#globeTools{position:absolute;right:10px;top:10px;display:flex;flex-direction:column;gap:5px;z-index:3}
 #globeTools button{
   width:26px;height:26px;border-radius:6px;cursor:pointer;
   background:#0b141ccc;border:1px solid var(--line);color:var(--ink);font-size:13px;
   backdrop-filter:blur(6px);
 }
 #globeTools button:hover{border-color:var(--cy);color:var(--cy)}
-#mapModes{position:absolute;left:8px;top:44px;display:flex;gap:4px;z-index:3}
+#mapModes{position:absolute;left:10px;top:10px;display:flex;gap:4px;z-index:3}
 #mapModes button{
   padding:3px 9px;border-radius:5px;cursor:pointer;font-size:9.5px;letter-spacing:.12em;
   background:#0b141ccc;border:1px solid var(--line);color:var(--dim);backdrop-filter:blur(6px)
 }
 #mapModes button[aria-selected=true]{border-color:var(--cy);color:var(--cy)}
-/* Fixed height, not flex-grown: .panel .pb carries flex:1;min-height:0, so a
-   camera panel left to flex collapsed to its 33px header and showed nothing. */
-/* Reference rail split, measured: camera 136/733 = 17%, globe 415/733 = 57%,
-   headlines 165/733 = 23%. The globe was getting 11% of the rail, which is why
-   its own HUD was unreadable - it was never given room. */
-/* Reference rail heights 137 / 427 / 134 within a 752 rail (gaps eat 26px).
-   flex-grow in the same ratio keeps those proportions at any viewport height,
-   which percentages could not do once a min-height started binding. */
-#camPanel{flex:137 1 0;min-height:76px}
-#camPanel .pb{flex:1 1 auto;min-height:0;background:#05080c}
-#camFeed{width:100%;height:100%;object-fit:cover;display:block;image-rendering:auto}
-#camOff,#camErr{position:absolute;inset:0;display:grid;place-content:center;
-  color:var(--dim);font-size:9.5px;letter-spacing:.16em;text-align:center;padding:8px}
-/* An author `display` rule beats the UA stylesheet's [hidden]{display:none}, so
-   the overlay stayed painted on top of the live feed. Re-assert it. */
-#camOff[hidden],#camErr[hidden]{display:none}
-#camErr{color:var(--rd);letter-spacing:0;font-size:10px}
-#camPanel button{text-transform:uppercase}
-#camPanel button.on{border-color:var(--rd);color:var(--rd)}
-.mini{margin-left:8px;padding:2px 8px;border-radius:4px;cursor:pointer;
-  background:#0b141c;border:1px solid var(--line);color:var(--dim);font-size:9px;letter-spacing:.12em}
-.mini.live{border-color:var(--gr);color:var(--gr)}
-.mini.arm{border-color:var(--am);color:var(--am)}
-#gestStatus{position:absolute;left:8px;bottom:6px;font-size:9px;letter-spacing:.1em;
-  color:var(--dim);pointer-events:none;text-shadow:0 0 4px #000}
-#globe{position:absolute;inset:0;border:0;width:100%;height:100%;background:#000}
-#globeTools{
-  position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:5px;z-index:3
+#betaTag{
+  position:absolute;right:10px;top:10px;z-index:3;padding:2px 7px;border-radius:4px;
+  background:#0b141ccc;border:1px solid var(--cy);color:var(--cy);
+  font-size:9px;letter-spacing:.14em;backdrop-filter:blur(6px)
 }
+#headlines{overflow:auto;padding:4px 12px 8px;flex:1 1 auto}
+#headlines .it{display:flex;gap:9px;padding:7px 0;border-bottom:1px solid #101923}
+#headlines .n{color:var(--cy);font-size:10px;font-weight:700;flex:0 0 auto;
+  font-variant-numeric:tabular-nums;padding-top:1px}
 #headlines a{color:var(--ink);text-decoration:none;line-height:1.35}
 #headlines a:hover{color:var(--cy)}
-#headlines .src{color:var(--dim);font-size:10px}
+#headlines .src{color:var(--dim);font-size:9.5px;margin-top:2px}
 
-/* ── agent town ────────────────────────────────────────── */
-#townhead{display:flex;align-items:center;gap:6px;margin-left:auto}
+/* ── agent town ─────────────────────────────────────────────────── */
+#townhead{display:flex;align-items:center;gap:4px;margin-left:auto}
 .tab{
-  padding:3px 10px;border-radius:5px;cursor:pointer;font-size:10px;letter-spacing:.1em;
-  background:transparent;border:1px solid transparent;color:var(--dim)
+  padding:4px 12px;border-radius:5px;cursor:pointer;font-size:10px;letter-spacing:.1em;
+  background:transparent;border:1px solid transparent;color:var(--dim);transition:.15s;
 }
+.tab:hover{color:var(--ink)}
 .tab[aria-selected=true]{background:#13202c;border-color:var(--cy);color:var(--cy)}
-#townbody{position:absolute;inset:0;overflow:hidden;background:#080d13;
-  display:grid;place-items:center}
-#townCanvas{image-rendering:pixelated;max-width:100%;max-height:100%;
-  width:auto;height:auto}
+#townbody{position:absolute;inset:0;overflow:hidden;background:#070c13;display:grid;place-items:center}
+#townCanvas{image-rendering:pixelated;max-width:100%;max-height:100%;width:auto;height:auto}
 #townNote{position:absolute;inset:0;display:grid;place-content:center;gap:6px;
-  text-align:center;color:var(--dim);background:#080d13f2;padding:20px}
-/* An author `display` rule beats the UA stylesheet's [hidden]{display:none}, so
-   this overlay stayed painted ON TOP of the live town canvas even while hidden -
-   which is why Agent Town measured mean luma 110 in the canvas but rendered at
-   16.6 on screen: we were looking at the overlay's background, not the office.
-   Same trap as #camOff, fixed here too. */
+  text-align:center;color:var(--dim);background:#070c13f2;padding:20px}
 #townNote[hidden]{display:none}
 #townNote b{color:var(--hi);font-size:12px;letter-spacing:.1em}
 #townNote span{font-size:10px}
+#chat{position:absolute;right:14px;bottom:48px;display:flex;gap:6px;z-index:4}
+#chat button{
+  display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:5px;cursor:pointer;
+  font-size:10px;letter-spacing:.14em;background:#0b141ccc;border:1px solid var(--line);
+  color:var(--ink);backdrop-filter:blur(6px);
+}
+#chat button:hover{border-color:var(--cy);color:var(--cy)}
 
-/* ── console (right): chat ─────────────────────────────────── */
+/* ── global status bar (own row, like the reference) ────────────── */
+#status{
+  flex:0 0 34px;display:flex;align-items:center;gap:18px;padding:0 14px;
+  border-top:1px solid var(--line);background:#070c12;color:var(--dim);font-size:10.5px;
+}
+#status b{color:var(--ink);font-weight:600}
+.meter{width:88px;height:5px;border-radius:99px;background:#131c26;overflow:hidden;display:inline-block;
+  vertical-align:middle}
+.meter i{display:block;height:100%;background:linear-gradient(90deg,var(--cy),var(--gr))}
+.avatar{
+  width:22px;height:22px;border-radius:50%;flex:0 0 22px;display:grid;place-items:center;
+  background:linear-gradient(140deg,#12313d,#0c1c26);border:1px solid var(--cy);
+  color:var(--cy);font-size:10px;font-weight:700;
+}
+
+/* ── console (right) ────────────────────────────────────────────── */
+#tabs{display:flex;gap:4px;margin-left:8px}
+#stream,#toolsView,#notesView{overflow:auto;padding:10px 14px;flex:1 1 auto;min-height:0}
+#stream[hidden],#toolsView[hidden],#notesView[hidden]{display:none}
 #convo{display:flex;flex-direction:column}
-#stream{flex:1 1 auto;min-height:0}
-/* Reference console cards sit at x=1027 in a 504 column: 32px inset, 459 wide. */
-.msg{margin:0 22px 12px;max-width:calc(100% - 45px)}
-.msg .who{font-size:9px;letter-spacing:.14em;margin-bottom:3px}
-.msg .bub{padding:7px 9px;border-radius:8px;white-space:pre-wrap;word-break:break-word;
-  font:11px/1.5 inherit}
-.msg.me{align-self:flex-end;text-align:right}
+.msg{margin:0 0 12px}
+.msg .who{font-size:9px;letter-spacing:.14em;margin-bottom:3px;color:var(--dim)}
+.msg .bub{padding:8px 10px;border-radius:7px;white-space:pre-wrap;word-break:break-word;
+  font:11px/1.5 inherit;background:#0d141c;border:1px solid var(--line);color:var(--ink)}
 .msg.me .who{color:var(--cy)}
-.msg.me .bub{background:#12303a;border:1px solid #1d4b5c;color:#d8f4ff}
+.msg.me .bub{background:#0f2a34;border-color:#1d4b5c;color:#d8f4ff}
 .msg.ai .who{color:var(--gr)}
-.msg.ai .bub{background:#101a14;border:1px solid #1d3a28;color:#d5e8dc}
-.msg.sys .bub{background:#0d141c;border:1px solid var(--line);color:var(--dim);font-size:10px}
+.msg.ai .bub{background:#0f1a15;border-color:#1d3a28;color:#d5e8dc}
+.msg.sys .bub{color:var(--dim);font-size:10px}
 .msg .att{margin-top:5px;font-size:10px;color:var(--am);
   border-top:1px solid #3a2f16;padding-top:4px}
-/* Reference input row: x=1010 w=474 h=47, pinned to the bottom of the panel. */
-/* Reference input row 1010,738 474x47 with 14px of panel below it. */
-#composer{flex:0 0 47px;display:flex;align-items:center;gap:10px;
-  margin:0 15px 14px;border-top:1px solid var(--line);background:#080d13}
-#chips{display:flex;gap:5px;flex-wrap:wrap;flex:0 0 auto;max-width:40%}
+.ev{border-left:2px solid var(--line);padding:3px 0 3px 8px;margin-bottom:5px}
+.ev .hd{display:flex;gap:7px;color:var(--dim);font-size:10px}
+.ev .hd b{color:var(--ink);font-weight:600}
+.ev.ok{border-left-color:var(--gr)} .ev.bad{border-left-color:var(--rd)}
+.ev.work{border-left-color:var(--am)} .ev.info{border-left-color:var(--cy)}
+.call{margin-bottom:10px;background:#080f16;overflow:hidden;
+  clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px)}
+.call .ch{display:flex;align-items:center;gap:8px;padding:6px 10px;background:#0d1822;
+  border-bottom:1px solid var(--line)}
+.call .ch b{color:var(--cy);font-size:11px;font-weight:700;letter-spacing:.06em}
+.call .ch .pf{color:var(--gr);font-size:9.5px;background:#0d1f18;border:1px solid #1c3a2a;
+  border-radius:99px;padding:1px 7px}
+.call .ch .tm{margin-left:auto;color:var(--dim);font-size:9.5px}
+.blk{padding:6px 10px}
+.blk .lb{color:var(--am);font-size:9px;letter-spacing:.16em;margin-bottom:3px}
+.blk.out .lb{color:var(--vi)}
+.blk pre{margin:0;white-space:pre-wrap;word-break:break-word;color:var(--ink);
+  font:10.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;max-height:170px;overflow:auto}
+.blk.out pre{color:#9fb3c8}
+#notesView .msg{max-width:100%}
+
+/* command bar, full width at the bottom like the reference */
+#composer{
+  flex:0 0 56px;display:flex;align-items:center;gap:10px;margin:0 14px 14px;
+  padding:0 6px 0 12px;border:1px solid var(--line);border-radius:9px;background:#0b131b;
+}
+#composer:focus-within{border-color:#2b4256}
+#chips{display:flex;gap:5px;flex-wrap:nowrap;flex:0 0 auto;max-width:34%}
 #chips:empty{display:none}
 .chip{font-size:10px;padding:3px 8px;border-radius:99px;background:#13202c;
-  border:1px solid var(--cy);color:var(--cy);display:flex;gap:6px;align-items:center}
+  border:1px solid var(--cy);color:var(--cy);display:flex;gap:6px;align-items:center;white-space:nowrap}
 .chip .x{cursor:pointer;color:var(--dim)}
-.crow{display:flex;gap:6px;align-items:center}
-#typebox{flex:1;min-width:0;padding:8px 10px;border-radius:7px;background:#0b131b;
-  border:1px solid var(--line);color:var(--ink);font:12px/1.3 inherit;outline:none}
-#typebox:focus{border-color:var(--cy)}
-#composer button{width:32px;height:32px;flex:0 0 32px;border-radius:7px;cursor:pointer;
+.crow{display:flex;gap:6px;align-items:center;margin-left:auto}
+#typebox{flex:1;min-width:0;background:transparent;border:0;outline:none;color:var(--ink);
+  font:12px/1.3 inherit;padding:10px 0}
+#typebox::placeholder{color:#4a5967}
+#composer button{width:34px;height:34px;flex:0 0 34px;border-radius:8px;cursor:pointer;
   background:#0e1922;border:1px solid var(--line);color:var(--ink);font-size:14px}
 #composer button:hover{border-color:var(--cy);color:var(--cy)}
 #send{background:#0d2a33;border-color:var(--cy);color:var(--cy)}
 #composer button:disabled{opacity:.4;cursor:not-allowed}
 
-/* ── console (right) ───────────────────────────────────── */
-#tabs{display:flex;gap:2px;margin-left:6px}
-#stream{overflow:auto;padding:8px 10px;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
-.ev{border-left:2px solid var(--line);padding:3px 0 3px 8px;margin-bottom:5px}
-.ev .hd{display:flex;gap:7px;color:var(--dim);font-size:10px}
-.ev .hd b{color:var(--ink);font-weight:600}
-.ev .bd{color:var(--ink);word-break:break-word;white-space:pre-wrap}
-.call{margin-bottom:9px;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:#0a121a}
-.call .ch{display:flex;align-items:center;gap:7px;padding:5px 8px;background:#0e1822;
-  border-bottom:1px solid var(--line)}
-.call .ch b{color:var(--cy);font-size:10.5px;font-weight:700}
-.call .ch .pf{color:var(--gr);font-size:9.5px;background:#0d1f18;border:1px solid #1c3a2a;
-  border-radius:99px;padding:1px 6px}
-.call .ch .tm{margin-left:auto;color:var(--dim);font-size:9.5px}
-.blk{padding:5px 8px}
-.blk .lb{color:var(--am);font-size:9px;letter-spacing:.14em;margin-bottom:2px}
-.blk.out .lb{color:var(--vi)}
-.blk pre{margin:0;white-space:pre-wrap;word-break:break-word;color:var(--ink);
-  font:10.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;max-height:150px;overflow:auto}
-.blk.out pre{color:#9fb3c8}
-.ev.ok{border-left-color:var(--gr)} .ev.bad{border-left-color:var(--rd)}
-.ev.work{border-left-color:var(--am)} .ev.info{border-left-color:var(--cy)}
-
-/* ── status bar ────────────────────────────────────────── */
-#status{
-  flex:0 0 30px;display:flex;align-items:center;gap:16px;padding:0 12px;
-  border-top:1px solid var(--line);background:#070c12;color:var(--dim);font-size:10.5px
-}
-#status b{color:var(--ink);font-weight:600}
-.meter{width:88px;height:5px;border-radius:99px;background:#131c26;overflow:hidden}
-.meter i{display:block;height:100%;background:linear-gradient(90deg,var(--cy),var(--gr))}
-#chat{position:absolute;right:10px;bottom:40px;display:flex;gap:6px;z-index:4}
-#chat button{
-  padding:5px 12px;border-radius:6px;cursor:pointer;font-size:10px;letter-spacing:.14em;
-  background:#0b141ccc;border:1px solid var(--line);color:var(--ink);backdrop-filter:blur(6px)
-}
-#chat button:hover{border-color:var(--cy);color:var(--cy)}
 ::-webkit-scrollbar{width:8px;height:8px}
 ::-webkit-scrollbar-thumb{background:#1b2836;border-radius:9px}
+
+/* ── short windows: give up the least useful space first ────────── */
+@media (max-height:700px){
+  #hlPanel{min-height:52px}
+  #camPanel{min-height:70px}
+  #globePanel{min-height:110px}
+}
 </style>
 </head>
 <body>
 
-<div id="top">
-  <span id="brand">HEL<b>I</b>X</span>
-  <span class="ver">
-    <span><span class="dot" id="vDot"></span> <span id="vTxt">connecting</span></span>
-    <span id="vModel">—</span>
+<div id="titlebar">
+  <span id="brand"><span class="mark"></span>HEL<b>I</b>X</span>
+  <button class="tbtn" id="demoBtn"><span class="gl">&#9654;</span> Demo Video</button>
+  <button class="tbtn" id="fbBtn"><span class="gl">&#9993;</span> Feedback</button>
+  <span id="tbRight">
+    <span class="ver"><span class="dot" id="vDot"></span> <span id="vTxt">connecting</span></span>
+    <span class="ver" id="vModel">—</span>
+    <span class="ver">v1.0.0</span>
   </span>
 </div>
 
 <main>
-  <!-- UPPER CENTRE: nodes (left) and orb (right) as separate panels -->
-  <div id="top">
+  <!-- UPPER CENTRE: node pills on the left, animated connectors, core on the right -->
+  <div id="core">
       <svg id="links"></svg>
       <div id="nodes">
         <div class="node" data-k="memory" style="--nc:var(--cy)"><span class="ic">◉</span><span class="lb">MEMORY</span><span class="ct" id="c-memory">–</span><span class="pip"></span></div>
@@ -315,7 +331,7 @@ main{
         <div id="orb"></div>
         <div id="orbstate"><span class="dot" id="orbDot"></span><span id="orbTxt">IDLE</span>
           <span id="coreState"></span></div>
-        <button id="startbtn">START HELIX</button>
+        <button id="startbtn">START AI</button>
       </div>
   </div>
 
@@ -323,21 +339,27 @@ main{
   <div id="left">
     <section class="panel" id="camPanel">
       <div class="ph"><span class="tag">◉</span> Media Link
-        <span id="camState" style="margin-left:auto;text-transform:none;letter-spacing:0">offline</span>
-        <button id="camToggle" class="mini">START</button>
-        <button id="gestToggle" class="mini">GESTURE</button>
+        <span class="tools">
+          <span id="camState" style="text-transform:none;letter-spacing:0">offline</span>
+          <button id="camToggle" class="mini">START</button>
+          <button id="gestToggle" class="mini">GESTURE</button>
+        </span>
       </div>
       <div class="pb">
         <img id="camFeed" alt="" hidden>
-        <div id="camOff"><span>CAMERA OFF</span></div>
+        <div id="camOff"><span>SYSTEM OFFLINE</span></div>
         <div id="camErr" hidden></div>
         <div id="gestStatus"></div>
       </div>
     </section>
+
     <section class="panel" id="globePanel">
-      <div class="ph"><span class="tag">◉</span> Sat-Link Feed <span style="margin-left:auto;text-transform:none;letter-spacing:0" id="globeSrc"></span></div>
+      <div class="ph"><span class="tag">◉</span> Sat-Link Feed
+        <span class="tools"><span style="text-transform:none;letter-spacing:0" id="globeSrc"></span></span>
+      </div>
       <div class="pb">
         <iframe id="globe" src="http://127.0.0.1:4173/?cb=2&welcome=0&clean=1" title="globe"></iframe>
+        <span id="betaTag">BETA</span>
         <div id="mapModes">
           <button data-m="3d" aria-selected="true">3D</button>
           <button data-m="2d" aria-selected="false">2D MAP</button>
@@ -348,8 +370,10 @@ main{
         </div>
       </div>
     </section>
+
     <section class="panel" id="hlPanel">
-      <div class="ph"><span class="tag">◉</span> Today Headlines <span style="margin-left:auto" id="hlCount"></span></div>
+      <div class="ph"><span class="tag">◉</span> Today Headlines
+        <span class="tools"><span id="hlCount"></span></span></div>
       <div id="headlines"></div>
     </section>
   </div>
@@ -357,7 +381,7 @@ main{
   <!-- AGENT TOWN -->
   <section class="panel" id="town">
     <div class="ph">
-      <span class="tag">◉</span> Agent Town
+      <span class="tag">◉</span> Agent Town <span id="townReady" style="text-transform:none;letter-spacing:.06em"></span>
       <div id="townhead">
         <button class="tab" data-t="agents" aria-selected="true">agents</button>
         <button class="tab" data-t="visual" aria-selected="false">visual hub</button>
@@ -365,48 +389,60 @@ main{
       </div>
     </div>
     <div class="pb">
-      <div id="townbody"><canvas id="townCanvas"></canvas><div id="townNote" hidden><b></b><span></span></div></div>
-      <div id="chat">
-        <button id="chatBtn">CHAT</button>
+      <div id="townbody">
+        <canvas id="townCanvas"></canvas>
+        <div id="townNote" hidden><b></b><span></span></div>
       </div>
-      <div id="status">
-        <span><span class="dot" id="sDot"></span> <b id="sOnline">offline</b></span>
-        <span>model <b id="sModel">—</b></span>
-        <span>CTX <span class="meter"><i id="sCtx" style="width:0%"></i></span> <b id="sCtxN">0</b></span>
-        <span><b id="sBusy">0</b>/<b id="sSeats">0</b> busy</span>
-        <span style="margin-left:auto" id="sAgents">–</span>
-      </div>
+      <div id="chat"><button id="chatBtn">CHAT</button></div>
     </div>
   </section>
 
   <!-- CONSOLE -->
   <section class="panel" id="console">
     <div class="ph">
-      <span class="tag">◉</span> Console
+      <span class="tag">◉</span>
       <div id="tabs">
-        <button class="tab" data-c="chat" aria-selected="true">CHAT</button>
-        <button class="tab" data-c="agent" aria-selected="false">TOOLS <span id="actCount"></span></button>
+        <button class="tab" data-c="voice" aria-selected="false">VOICE</button>
+        <button class="tab" data-c="agent" aria-selected="true">AGENT</button>
         <button class="tab" data-c="notes" aria-selected="false">NOTES</button>
       </div>
+      <div class="tools">
+        <button class="icobtn" title="New">+</button>
+        <button class="icobtn" id="cHist" title="History">&#8635;</button>
+        <button class="icobtn" id="cTerm" title="Terminal">&#9654;</button>
+        <button class="icobtn" id="cFull" title="Fullscreen">&#9974;</button>
+      </div>
+      <span id="actCount" style="display:none"></span>
     </div>
     <div class="pb" id="convo">
-      <div id="stream"></div>
-      <div id="toolsView" hidden></div>
-      <div id="notesView" hidden><div class="msg sys"><div class="bub">
-        Notes view is not built yet — shown honestly rather than as a mock.</div></div></div>
-      <div id="composer">
+      <div id="stream" hidden></div>
+      <div id="toolsView"></div>
+      <div id="notesView" hidden>
+        <div class="msg sys"><div class="bub">
+          Notes view is not built yet — shown honestly rather than as a mock.</div></div>
+      </div>
+      <div id="composer" hidden>
         <div id="chips"></div>
         <div class="crow">
+          <button id="micBtn" title="Voice input">&#9679;</button>
           <button id="attach" title="Send a file to Helix">&#128206;</button>
-          <input id="typebox" type="text" placeholder="Type a command for Helix&hellip;" autocomplete="off">
-          <button id="send" title="Send">&#10148;</button>
         </div>
+        <input id="typebox" type="text" placeholder="Type instruction or command for Helix&hellip;" autocomplete="off">
+        <button id="send" title="Send">&#10148;</button>
         <input id="fileInput" type="file" hidden>
       </div>
     </div>
   </section>
 </main>
 
+<div id="status">
+  <span class="avatar">H</span>
+  <span><span class="dot" id="sDot"></span> <b id="sOnline">offline</b></span>
+  <span>&#9881; <b id="sModel">—</b></span>
+  <span>CTX <span class="meter"><i id="sCtx" style="width:0%"></i></span> <b id="sCtxN">0</b></span>
+  <span>&#128101; <b id="sSeats">0</b>/<b id="sBusy">0</b> busy</span>
+  <span style="margin-left:auto" id="sAgents">–</span>
+</div>
 
 
 <script type="module">
@@ -440,7 +476,7 @@ const NODES = ["memory","skills","soul","settings"];
    from the wrong element and the connectors drew as two stubs floating to the
    right of the orb. */
 function drawLinks(){
-  const host = $("#top"), svg = $("#links");
+  const host = $("#core"), svg = $("#links");
   const hb = host.getBoundingClientRect();
   const w = Math.round(hb.width), h = Math.round(hb.height);
   svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
@@ -448,19 +484,76 @@ function drawLinks(){
   const cx = Math.round(ob.left - hb.left + ob.width/2);
   const cy = Math.round(ob.top - hb.top + ob.height/2);
   const COL = {memory:"#22d3ee",skills:"#f59e0b",soul:"#22c55e",settings:"#7d8b99"};
-  svg.innerHTML = NODES.map(k=>{
+  const g = document.createElementNS("http://www.w3.org/2000/svg","g");
+  const pulses = [];
+  NODES.forEach((k,i)=>{
     const n = document.querySelector(`.node[data-k=${k}]`);
     const nb = n.getBoundingClientRect();
-    const x = Math.round(nb.right - hb.left + 3);
+    const x = Math.round(nb.right - hb.left + 4);
     const y = Math.round(nb.top - hb.top + nb.height/2);
-    const mx = x + (cx-x)*0.55;
-    return `<path d="M${x},${y} L${mx},${y} L${cx},${cy}" fill="none"
-      stroke="${COL[k]}" stroke-width="1.5" opacity=".75"/>
-      <circle cx="${x}" cy="${y}" r="2.5" fill="${COL[k]}"/>`;
-  }).join("");
+    // Elbow then diagonal, like the reference: a short horizontal run off the
+    // pill, then a straight segment converging on the core.
+    const elbow = Math.min(x + 46, (x+cx)/2);
+    const p = document.createElementNS("http://www.w3.org/2000/svg","path");
+    p.setAttribute("d", `M${x},${y} L${elbow},${y} L${cx},${cy}`);
+    p.setAttribute("fill","none");
+    p.setAttribute("stroke",COL[k]);
+    p.setAttribute("stroke-width","1.5");
+    p.setAttribute("opacity",".8");
+    g.appendChild(p);
+    const dot = document.createElementNS("http://www.w3.org/2000/svg","circle");
+    dot.setAttribute("r","2.6"); dot.setAttribute("fill",COL[k]);
+    dot.setAttribute("cx",x); dot.setAttribute("cy",y);
+    g.appendChild(dot);
+    // one travelling energy dot per link, staggered so they do not march in step
+    const m = document.createElementNS("http://www.w3.org/2000/svg","circle");
+    m.setAttribute("r","2.4"); m.setAttribute("fill",COL[k]);
+    g.appendChild(m);
+    pulses.push({ el:m, path:p, phase:i * 0.25 });
+  });
+  svg.innerHTML = "";
+  svg.appendChild(g);
+  pulseState.paths = pulses;
+  pulseState.len = pulses.map(p => p.path.getTotalLength());
 }
+/* Energy dots ride the connector paths. Stops the rAF when the tab is hidden so
+   a backgrounded console is not burning frames for an animation nobody sees. */
+const pulseState = { paths:[], len:[], on:false, raf:0 };
+function tickPulses(){
+  const t = performance.now() / 1000;
+  pulseState.paths.forEach((p,i)=>{
+    const L = pulseState.len[i] || 1;
+    const u = (t * 0.32 + p.phase) % 1;
+    const pt = p.path.getPointAtLength(u * L);
+    p.el.setAttribute("cx", pt.x); p.el.setAttribute("cy", pt.y);
+    p.el.setAttribute("opacity", (0.25 + 0.75 * Math.sin(u * Math.PI)).toFixed(3));
+  });
+  pulseState.raf = requestAnimationFrame(tickPulses);
+}
+function startPulses(){
+  if (pulseState.on) return;
+  pulseState.on = true;
+  tickPulses();
+}
+function stopPulses(){
+  pulseState.on = false;
+  cancelAnimationFrame(pulseState.raf);
+}
+document.addEventListener("visibilitychange", () =>
+  document.hidden ? stopPulses() : startPulses());
 addEventListener("resize",drawLinks);
 setTimeout(drawLinks,60);
+startPulses();
+
+/* ── orb visual state ─────────────────────────────────────────
+   The scene exposes idle/listening/thinking/speaking/task/shutdown.
+   This is the single place that decides which one is showing. */
+let sessionOn = false;
+function setOrbState(name){
+  if (orb && orb.setState) orb.setState(name);
+  const el = $("#orbstate");
+  if (el) el.dataset.state = name;
+}
 
 /* ── cortex counts ─────────────────────────────────────── */
 async function cortex(){
@@ -492,9 +585,16 @@ async function state(){
       $("#sCtxN").textContent = "n/a";   // unknown, never a fabricated 0
       $("#sCtx").style.width = "0%";
     }
+    // Orb state follows what the backend is actually doing:
+    //   session off + nothing running -> idle
+    //   session on, nothing running    -> listening
+    //   agents working                -> executing
+    // Anything else would be decoration pretending to be status.
     const anyW = busy > 0;
     $("#orbDot").className = "dot " + (anyW ? "warn" : "on");
-    $("#orbTxt").textContent = anyW ? `${busy} WORKING` : "IDLE";
+    setOrbState(anyW ? "task" : (sessionOn ? "listening" : "idle"));
+    $("#orbTxt").textContent = anyW ? `${busy} WORKING`
+                         : (sessionOn ? "LISTENING" : "IDLE");
     $("#coreState").textContent = ps.length + " agents · " + busy + " working";
     drawDesks(ps);
   }catch(e){ $("#vDot").className="dot err"; $("#vTxt").textContent="bridge down"; }
@@ -508,6 +608,7 @@ try {
     const s = $("#sBusy"); if (s) s.textContent = busy;
   });
   town.start();
+  const rd = $("#townReady"); if (rd) rd.textContent = "ready";
   log("agent town ready","ok");
 } catch(e) {
   log("agent town failed: "+e.message,"bad");
@@ -807,10 +908,10 @@ document.querySelectorAll("#townhead .tab").forEach(b=>b.onclick=()=>{
 document.querySelectorAll("#tabs .tab").forEach(b=>b.onclick=()=>{
   document.querySelectorAll("#tabs .tab").forEach(x=>x.setAttribute("aria-selected", x===b));
   actMode = b.dataset.c;
-  const which = { chat:"#stream", agent:"#toolsView", notes:"#notesView" }[b.dataset.c];
+  const which = { voice:"#stream", agent:"#toolsView", notes:"#notesView" }[b.dataset.c];
   ["#stream","#toolsView","#notesView"].forEach(id =>
     document.querySelector(id).hidden = (id !== which));
-  $("#composer").hidden = b.dataset.c !== "chat";
+  $("#composer").hidden = b.dataset.c !== "voice";
   if (b.dataset.c === "agent"){ activity(); startActivityPoll(); }
   else clearInterval(_actTimer);
 });
@@ -818,12 +919,17 @@ $("#chatBtn").onclick = ()=> log("text chat not built yet — voice/whatsapp are
 
 /* start/stop is honest: it reports what it actually does */
 $("#startbtn").onclick = ()=>{
-  const on = $("#startbtn").classList.toggle("stop");
-  $("#startbtn").textContent = on ? "STOP HELIX" : "START HELIX";
-  $("#orbTxt").textContent = on ? "LISTENING" : "IDLE";
-  log(on ? "session requested — voice core runs at /voice-core/" : "session released","info");
+  sessionOn = $("#startbtn").classList.toggle("stop");
+  $("#startbtn").textContent = sessionOn ? "STOP AI" : "START AI";
+  if (orb && orb.getState() === "shutdown") orb.setState("idle");
+  state();   // re-derives listening vs idle from the flag just flipped
+  log(sessionOn ? "session requested — voice core runs at /voice-core/"
+                : "session released","info");
 };
 
+// Open on AGENT, so the console shows real tool calls on load rather than an
+// empty column. Still driven by /activity - no demo cards.
+activity();
 cortex(); state(); headlines(); wireEvents();
 setInterval(state, 4000);
 setInterval(cortex, 15000);

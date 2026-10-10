@@ -4672,3 +4672,122 @@ here so that was never the cause.
 - Sharing one capture between `/cam` and gesture. Both want the same single-client
   device; making them yield to each other is more machinery than the feature is
   worth until someone actually wants both at once.
+
+## Console rebuild to the reference composition (requirements §4, §9, §11)
+
+User: "i totally sucks, rebuild it in this structure", with four reference
+screenshots (full UI @1509x812, globe, Agent Town, nodes+core) and a phased
+prompt. Implemented straight through, not re-planned.
+
+### Phase 1 - audit: what the stack already is
+Inspected rather than assumed, as instructed. The reference prompt's preferred
+stack is PySide6 + Three.js + GLSL + GSAP. Findings:
+
+- **The project is already Python-backend + Three.js-web-frontend.**
+  `bridge/server.py` (stdlib only) serves `/console/` and the data endpoints;
+  `ui/console/orbScene.js` is a real Three.js/WebGL scene; `town.js` is a canvas
+  2D pixel scene. There is no Qt, no Electron, no React anywhere.
+- **PySide6 was therefore NOT added.** The prompt says: "If the existing
+  application already has a suitable graphics frontend, extend it instead of
+  creating a competing architecture" and "Do not add a second desktop shell
+  unnecessarily". Adding Qt would have been exactly that. Qt WebEngine would
+  also have needed a bridge to replace the local HTTP API the prompt says to
+  reuse rather than duplicate.
+- **React / R3F / Godot / WebGPU: not added.** Each would be a second renderer
+  for a scene that already renders. Godot is explicitly called out as not
+  justified by a pixel-art office.
+- **GSAP: not added.** A ~70KB dependency for a handful of tweens; CSS keyframes
+  and the existing rAF cover the startup/panel/pulse work. The prompt says
+  "Choose the best compatible combination, not the largest number of
+  technologies" and "Do not use every framework merely because it is listed."
+- Hardware re-verified: i5-7300U, **Intel HD 620**, 4 cores/8 threads, 6.9Gi RAM.
+
+### Phase 2/4 - layout, and two real bugs found by inspecting rather than reading
+
+**Bug 1: `id="top"` was defined TWICE** - once on the title bar, once on the
+upper-centre grid area. `document.querySelector("#top")` returns the FIRST, so
+`drawLinks()` measured every connector against the 1509x35 title bar. That is
+why no connector lines had ever rendered. Renamed to `#titlebar` / `#core`.
+Verified: zero duplicate ids in markup now.
+
+**Bug 2: the composer floated to the top of the console column.** `#stream` had
+lost its `flex:1` during the rebuild, so the column never filled and the command
+bar sat under the header instead of the bottom edge.
+
+Rebuilt: bevelled panel chrome (clip-path + a 1px ::before ring, because
+clip-path cuts the border with it), node pills with the notched/angled edge,
+elbow connector paths with energy dots that ride the paths via
+`getPointAtLength` and stop on `visibilitychange`, hexagonal START AI button,
+full-width command bar, own global status row, top bar with Demo/Feedback.
+
+### Phase 3 - graphics: the orb was a solid orange sun
+
+Two causes, both found by measuring pixels rather than reading code:
+
+1. **The animate loop overwrote the bloom every frame.**
+   `bloom.strength = 1.6 + sin(t)*0.3` ran each frame, silently undoing the
+   0.7 the constructor set with a comment explaining 0.7 was the fix.
+2. **The whole palette was warm orange** - `C_BRIGHT #ffaa30`, `C_MID #dd7700`,
+   `C_FAINT #553300`. The reference core is pale cyan.
+
+Moved the palette cool (`#d6f7ff / #4fd8ee / #14586b`), made bloom state-driven,
+dropped exposure 0.8 -> 0.62.
+
+**Orb luminance, measured over the 290x275 core panel:**
+
+| | before | after |
+|---|---:|---:|
+| mean luma | 134.5 | 43.5 |
+| pixels >200 | 23.8% | 6.6% |
+
+### Real visual states, not decoration
+Added `setState()` to the scene with idle / listening / thinking / speaking /
+task / shutdown, each scaling bloom, spin, ring speed and particle drift. The
+console derives the state from backend reality: agents working -> `task`, else
+session on -> `listening`, else `idle`. Verified `window.helixOrb.getState()`.
+
+### Agent Town art pass
+- Palette moved from light slate greys to a deep navy base so lit desks and cyan
+  monitors read as light sources instead of one flat mid-grey field.
+- Added ceiling light pools over the desk rows and a cool corridor fill.
+- **Sprites 8x14 -> 12x20.** At the panel's real 1.9x fit the old sprite was a
+  15x27 sliver - a coloured pillar, not a person. Now head, hair, shirt, arms
+  and legs are individually readable.
+- **Fixed idle crowding.** Idle agents targeted `150 + (desk%4)*22`, putting five
+  on the same 16px of floor with overlapping names. Replaced with nine varied
+  LOUNGE spots kept clear of both desk rows, the corridor and the rug.
+- Town luminance 100.5 -> 67.5: darker and higher contrast, as intended.
+
+### Console opens on AGENT, not an empty column
+VOICE was the default tab and it is empty until you talk, so the whole 504px
+right column loaded blank. Now opens on AGENT, which calls `/activity` on boot
+and renders real tool-call cards with INPUT/OUTPUT blocks. Verified live: 40
+calls, showing terminal + tool_call cards from `helix` and `document`.
+
+### Phase 5/7 - functionality preserved (verified, not assumed)
+```
+/state 200  /cortex 200  /activity 200  /headlines 200  /console/ 200
+agents: 9   model: nvidia/nemotron-3.5-lightning:free   tool calls: 40
+cortex: {'memory': 2, 'skills': 14, 'soul': 9, 'settings': 9}
+all five user services active (hermes-gateway, bridge, live, globe, gesture)
+every id the JS queries still resolves against the markup - none missing
+```
+
+### Not my code: a Chrome renderer leak on this box
+`browser.evaluate` started timing out. Investigated instead of retrying:
+load average **8.94** on 4 cores, **338MiB RAM free**, and `/opt/google/chrome`
+holding **3.9GB across 18 renderers**, spawning roughly one every 10s
+(~0.8GB/min measured over a 10s window).
+
+Checked all 18 renderers' memory for `127.0.0.1:8787` - **none matched**, so the
+HELIX console is not the cause. It is the user's own Chrome (parent gnome-shell,
+started ~13 min earlier), and the headless Brave used by `tools/shot-url.py` is
+a separate instance on `/tmp/hd9`. Not touched: killing a browser loses the
+user's session, which needs their call.
+
+### Skipped
+- Perf/FPS numbers: could not be taken reliably while the box was at load 9 -
+  measuring now would report the contention, not the UI. Re-measure once Chrome
+  is closed.
+- Reduced-effects mode: the orb already degrades (shader-free fallback message,
+  and `orbScene` fails soft to an error card), but there is no quality switch.

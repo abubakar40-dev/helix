@@ -15,7 +15,32 @@ REPO="${GODSEYE_REPO:-/home/abubakargcx/gods-eye-view}"
 FILE="$REPO/build/vite.js"
 MARKER="ponytail: local Helix edit"
 
+CSS_FILE="$REPO/src/ui/styles/command-dock.css"
+SHELL_FILE="$REPO/src/app/startupChrome.js"
+# Match the BEHAVIOUR, not a comment. Grepping for the marker comment passed
+# even with the code deleted, because the comment survived - a check that cannot
+# fail is worse than no check.
+CSS_MARKER='body.ui-embed #clean-view-exit'
+SHELL_MARKER="classList.add('ui-clean-view', 'ui-embed')"
+
 status() { printf '  %s\n' "$1"; }
+
+# --- second patch: embed mode (?clean=1) -------------------------------------
+# A git pull in gods-eye-view drops BOTH local edits. The framing one shows as a
+# blank panel; the clean-view one shows as the globe's own panels (voice dock,
+# "POWER UP . 8 KEYS WAITING", provider settings) covering the map in a 284px
+# panel. Same failure class, so both are checked here.
+rc=0
+if grep -qF "$CSS_MARKER" "$CSS_FILE" 2>/dev/null &&
+   grep -qF "$SHELL_MARKER" "$SHELL_FILE" 2>/dev/null; then
+  status "OK    embed mode present (?clean=1 hides app chrome)"
+else
+  status "MISSING  ?clean=1 embed mode"
+  status "          The globe panel will show the app's own panels over the map."
+  status "          Re-apply per docs/PROGRESS.md, or the globe still works,"
+  status "          just with its chrome on top."
+  rc=1
+fi
 
 if [ ! -f "$FILE" ]; then
   status "FAIL  $FILE does not exist"
@@ -25,14 +50,14 @@ fi
 # Already patched? A no-op is success.
 if grep -qF "$MARKER" "$FILE"; then
   status "OK    frame headers removed, globe can be iframed ($FILE)"
-  exit 0
+  exit $rc
 fi
 
 if [ "${1:-}" != "--fix" ]; then
   status "MISSING  $FILE still sets X-Frame-Options / frame-ancestors."
   status "          The Helix World Monitor panel will render blank."
   status "          Re-run with --fix, or see docs/PROGRESS.md."
-  exit 1
+  rc=1
 fi
 
 # Re-apply: drop the two header lines and the CSP line, then leave a marker so

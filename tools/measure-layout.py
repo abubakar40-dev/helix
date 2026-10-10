@@ -49,11 +49,11 @@ EXPR = """(() => { const W=innerWidth,H=innerHeight;
 def main():
     tabs = json.load(urllib.request.urlopen(
         f"http://127.0.0.1:{PORT}/json/list", timeout=10))
-    page = [t for t in tabs
-            if t.get("type") == "page" and "console" in (t.get("url") or "")]
+    # Any page will do: the target is navigated below. Filtering on "console"
+    # made the tool fail whenever the browser happened to be left on the globe.
+    page = [t for t in tabs if t.get("type") == "page"]
     if not page:
-        print(json.dumps({"error": "no console tab",
-                          "urls": [t.get("url") for t in tabs]}))
+        print(json.dumps({"error": "no page target"}))
         return 1
     ws = page[0]["webSocketDebuggerUrl"].split("://", 1)[1]
     hostport, path = ws.split("/", 1)

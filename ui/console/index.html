@@ -330,7 +330,7 @@ main{
     <section class="panel" id="globePanel">
       <div class="ph"><span class="tag">◉</span> Sat-Link Feed <span style="margin-left:auto;text-transform:none;letter-spacing:0" id="globeSrc"></span></div>
       <div class="pb">
-        <iframe id="globe" src="http://127.0.0.1:4173/?cb=2&welcome=0" title="globe"></iframe>
+        <iframe id="globe" src="http://127.0.0.1:4173/?cb=2&welcome=0&clean=1" title="globe"></iframe>
         <div id="mapModes">
           <button data-m="3d" aria-selected="true">3D</button>
           <button data-m="2d" aria-selected="false">2D MAP</button>
@@ -720,7 +720,7 @@ async function headlines(){
 document.querySelectorAll("#mapModes button").forEach(b=>b.onclick=()=>{
   document.querySelectorAll("#mapModes button").forEach(x=>x.setAttribute("aria-selected", x===b));
   const q = b.dataset.m==="2d" ? "pitch=-90&heading=0&map=esri-imagery" : "";
-  $("#globe").src = `http://127.0.0.1:4173/?cb=2&welcome=0${q?"&"+q:""}`;
+  $("#globe").src = `http://127.0.0.1:4173/?cb=2&welcome=0&clean=1${q?"&"+q:""}`;
 });
 
 /* ── tabs (visual hub / gesture are phases 2+, honest here) ── */

@@ -4488,3 +4488,79 @@ edit would appear not to have taken effect — which cost several rounds of meas
 2. **Snap Brave runs a single instance** and reuses the first debug port, so "launch a
    fresh browser" silently kept serving the old page. Fixed by navigating the live target
    with `Network.setCacheDisabled` instead.
+
+---
+
+## 2026-10-10 — Phase 7: globe embedded cleanly (?clean=1)
+
+Continuing from "the globe isn't working as expected". Investigated before replacing it,
+as promised.
+
+### The globe was never broken — its own UI was covering it
+Service active, CSP framing patch intact, **every data layer 200**
+(`/api/celestrak/starlink`, `/api/celestrak/active`, `/api/launches`, `/api/setup/status`).
+The problem was purely presentation: at 284x427 the app renders, as measured from
+`document.body.innerText`:
+
+```
+AI AGENT OFF · ON/OFF VOICE STANDBY · VISUAL PRESETS · DATA LAYERS + SCENES + DISPLAY
+POWER UP · 8 KEYS WAITING · SYNCING ROAD NETWORK · < 25.0KM >
+```
+
+Seven panels over a 284px-wide map. Replacing verified-working software with an unknown
+repo would have thrown away working satellite/launch/aircraft data to fix a CSS problem.
+
+### The app already had the answer
+`src/ui/applicationShell.js` has **`toggleCleanView()`** and `body.ui-clean-view` already
+hides 21 selectors (`#command-dock`, `#key-setup`, `#title-bar`, `#data-panel`,
+`#scene-panel`, `#cctv-panel`, …). Only two things were missing:
+1. no way to trigger it from a URL — so Helix could not use it from an iframe;
+2. `#gev-voice-control` (the "AI AGENT / ON/OFF / VOICE STANDBY" dock) and the credits
+   were not in the hide list.
+
+Also found and measured rather than guessed: **`hv=0` is not the same thing** — it only
+drops the HUD visibility chip, and the panels stayed. Testing it cost one round and
+saved a wrong patch.
+
+### Two small, additive, marked patches (same pattern as the vite.js one)
+- `src/app/startupChrome.js` — `?clean=1` adds `ui-clean-view` **and** `ui-embed`.
+  `ui-embed` is Helix-specific because upstream *deliberately* keeps
+  `#clean-view-exit` (`display: inline-flex`) visible in clean view, which is useless
+  when embedded and covers the top of the map.
+- `src/ui/styles/command-dock.css` — `body.ui-embed` hides `#clean-view-exit`,
+  `#cesium-credits`, `#gev-voice-control`, and clips `#left-panel-stack` /
+  `#right-context-rail`.
+
+The scrollbars were located by querying every element for `scrollWidth > clientWidth`:
+`#left-panel-stack` and `#right-context-rail` measure **257px of content in a 237px box**
+with `overflow:auto`. Clipped, not hidden, so their content is kept.
+
+Result, verified by screenshot at the real panel size: clean 3D satellite imagery of
+Austin with only the tactical readout — `METRO NEAR FROST BANK TOWER (AUSTIN)`,
+`ORB: 47951 PASS: DESC-297`, live MGRS — and no app chrome.
+
+### 🔴 The patch checker could not fail — caught by testing it backwards
+
+Extended `tools/check-globe-patch.sh` to cover this second local edit, then ran the
+negative test. **It passed with the code deleted**, because it grepped for the
+`ponytail:` *comment*, which survives the removal of the code it describes.
+
+Now it matches behaviour instead: `body.ui-embed #clean-view-exit` in the CSS and
+`classList.add('ui-clean-view', 'ui-embed')` in the shell. Verified in both directions:
+
+```
+strip ui-embed from startupChrome.js -> MISSING, exit 1   (was: OK, exit 0)
+strip the CSS rule                  -> MISSING, exit 1
+restore both                        -> OK, exit 0
+```
+
+Same lesson as the eras office-match check earlier in this log: **a check that cannot
+fail is worse than no check.**
+
+### Honest limit
+The globe's *imagery* renders correctly in a GPU browser (verified standalone at
+`/tmp/globe-E.png`: Austin imagery, HUD legible). In this headless harness it uses
+software WebGL and was still loading terrain when captured, so the console screenshot
+shows the HUD over an olive background. That is the harness, not the app — but it does
+mean **the in-console globe is verified for chrome removal, not for imagery**, and only
+the user's own browser can close that.

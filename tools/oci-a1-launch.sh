@@ -73,16 +73,22 @@ ol() { local path=$1; shift; o "$@" --output json 2>/dev/null | jq -r ".data[]${
 # OCI writes errors as JSON on stderr; fall back to raw text when it is not JSON.
 err_field() { printf '%s' "$1" | jq -r ".${2} // empty" 2>/dev/null; }
 
-# Retry only what is genuinely transient.
-is_capacity_error() {
+# Retry only what is genuinely transient: capacity, throttling, and transport
+# failures. A dropped connection is ambiguous - the launch may have been accepted
+# and only the response lost - but the next attempt adopts an existing instance
+# rather than creating a second one, so retrying is safe and stopping is not.
+is_retryable_error() {
   local json=$1 msg code status blob
   msg=$(err_field "$json" message); code=$(err_field "$json" code); status=$(err_field "$json" status)
   [[ -z "$msg" && -z "$code" ]] && msg="$json"
   blob=$(printf '%s %s' "$msg" "$code" | tr '[:upper:]' '[:lower:]')
   case "$blob" in
     *"out of host capacity"*|*"out of capacity"*|*"insufficient capacity"*) return 0 ;;
+    *requestexception*)                                                       return 0 ;;
+    *"timed out"*|*"timeout"*|*"connection refused"*|*"connection reset"*)   return 0 ;;
+    *"network is unreachable"*|*"could not connect"*|*"max retries exceeded"*) return 0 ;;
   esac
-  [[ "$status" == "429" ]] && return 0
+  case "$status" in 429|502|503|504) return 0 ;; esac
   return 1
 }
 
@@ -278,13 +284,13 @@ while :; do
       log "launch accepted: $INST_ID"
     else
       printf '%s\n' "$OUT" | sed 's/^/    /' | tee -a "$LOG"
-      if is_capacity_error "$OUT"; then
-        log "capacity miss in $AD; sleeping ${DELAY}s"
+      if is_retryable_error "$OUT"; then
+        log "transient failure in $AD; sleeping ${DELAY}s"
         sleep "$DELAY"
         DELAY=$(( DELAY * 3 / 2 )); (( DELAY > BACKOFF_MAX )) && DELAY=$BACKOFF_MAX
         continue
       fi
-      die "non-capacity error, stopping instead of retrying. Fix the above, then rerun."
+      die "non-transient error, stopping instead of retrying. Fix the above, then rerun."
     fi
   fi
 

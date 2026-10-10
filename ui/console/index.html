@@ -116,8 +116,16 @@ main{
    a 299px box. Content box is 350..972 with the column starting at 505, so its
    centre is x=737.6 - which is where the reference START button sits (738.5).
    The orb canvas stays 299x286; only its placement changes. */
-#core{position:relative;display:grid;grid-template-columns:155px minmax(0,1fr);
-  align-items:start;justify-items:center;padding:6px 10px 7px}
+#core{
+  position:relative;display:grid;grid-template-columns:155px minmax(0,1fr);
+  align-items:start;justify-items:center;padding:6px 10px 7px;
+  /* The orb is a fixed 299x286 box but this row is only 312px at the reference
+     size, so there was 7px of slack. On any shorter window the orb spilled out
+     of the row and landed on the Agent Town tab strip below - measured, not
+     guessed: core 312 vs orb needing 13+286 = 299, so anything under ~781px of
+     window height overlapped. Clipping here makes that impossible at any size. */
+  overflow:hidden;
+}
 #nodes{display:flex;flex-direction:column;gap:21px;width:155px;flex:0 0 155px}
 .node{
   --nc:var(--cy);
@@ -137,9 +145,12 @@ main{
 .node .pip{width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:var(--nc);
   box-shadow:0 0 8px var(--nc)}
 #links{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;overflow:visible}
+/* Nudged up and right at the user's request. Right: the 465px column leaves 84px
+   of slack past the orb. Positioned at translateX(36px) / margin-top 0: the
+   user asked for a further 10px right and 2px up from where it sat. */
 #orbwrap{
   width:299px;height:286px;flex:0 0 299px;position:relative;overflow:hidden;
-  margin-top:13px;
+  margin-top:0;transform:translateX(36px);
   clip-path:var(--bevel);
   background:radial-gradient(120% 120% at 50% 38%,#0e1a26 0%,#060b11 72%);
   box-shadow:0 10px 34px #000a;

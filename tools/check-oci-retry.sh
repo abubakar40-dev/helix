@@ -17,8 +17,8 @@ pass() { printf 'PASS  %s\n' "$1"; }
 fail() { printf 'FAIL  %s\n' "$1"; FAILED=1; }
 
 # ---------------------------------------------------------------- 1. classifier
-# is_capacity_error decides retry-vs-stop. Retrying a non-capacity error hides the
-# real fault and hammers the API; stopping on a capacity error gives up the VM.
+# is_retryable_error decides retry-vs-stop. Retrying a non-transient error hides the
+# real fault and hammers the API; stopping on a transient one gives up the VM.
 # Extract verbatim from the script so the check cannot drift from what runs.
 extract_fn() { # fn-name: one-liner functions end on their opening line
   local n
@@ -31,13 +31,13 @@ extract_fn() { # fn-name: one-liner functions end on their opening line
   fi
 }
 extract_fn err_field > "$TMP/clf.sh" || { fail "no err_field in $TARGET"; exit 1; }
-extract_fn is_capacity_error >> "$TMP/clf.sh" || { fail "no is_capacity_error in $TARGET"; exit 1; }
+extract_fn is_retryable_error >> "$TMP/clf.sh" || { fail "no is_retryable_error in $TARGET"; exit 1; }
 # shellcheck disable=SC1091
-. "$TMP/clf.sh" || { fail "could not extract is_capacity_error from $TARGET"; exit 1; }
-type -t is_capacity_error >/dev/null || { fail "is_capacity_error did not load"; exit 1; }
+. "$TMP/clf.sh" || { fail "could not extract is_retryable_error from $TARGET"; exit 1; }
+type -t is_retryable_error >/dev/null || { fail "is_retryable_error did not load"; exit 1; }
 
 check_err() { # desc, json, want(retry|stop)
-  local got; is_capacity_error "$2" && got=retry || got=stop
+  local got; is_retryable_error "$2" && got=retry || got=stop
   [[ "$got" == "$3" ]] && pass "$1 -> $got" || fail "$1 -> got $got, want $3"
 }
 
@@ -45,6 +45,11 @@ check_err "Out of host capacity (InternalError/500)" '{"code":"InternalError","m
 check_err "LimitExceeded out of capacity"             '{"code":"LimitExceeded","message":"Out of capacity for shape VM.Standard.A1.Flex","status":409}' retry
 check_err "429 throttling"                            '{"code":"TooManyRequests","message":"Rate limit exceeded","status":429}' retry
 check_err "capacity as plain text, not JSON"          'ServiceError: Out of host capacity' retry
+# the real one that killed a 75 minute run
+check_err "RequestException connection timed out"     '{"message":"The connection to endpoint timed out.","target_service":"CLI"}' retry
+check_err "connection refused"                        '{"code":"ConnectionRefused","message":"Connection refused"}' retry
+check_err "503 service unavailable"                   '{"code":"ServiceUnavailable","message":"Service unavailable","status":503}' retry
+check_err "502 bad gateway"                           '{"code":"BadGateway","message":"Bad gateway","status":502}' retry
 check_err "auth failure"                              '{"code":"NotAuthorizedOrNotFound","message":"Authorization failed","status":404}' stop
 check_err "wrong fingerprint"                         '{"code":"InvalidApiKey","message":"The API key fingerprint does not match","status":401}' stop
 check_err "compartment quota exceeded"                '{"code":"LimitExceeded","message":"Compartment quota exceeded for instance count","status":409}' stop
@@ -136,8 +141,18 @@ ads=$(grep -o 'AD=Abcd:ME-ABUDHABI-1-AD-[12]' <<<"$out" | sort -u | wc -l)
                    || fail "expected both ADs to be tried, saw $ads"
 pass "end-to-end: capacity miss -> retry -> success -> public IP"
 
+# A dropped connection used to kill a 75 minute run at attempt 18.
+out=$(run "x" MOCK_LAUNCH_FAILS=99 MOCK_ERR_CODE=RequestException \
+        MOCK_ERR_MSG="The connection to endpoint timed out." MOCK_ERR_STATUS= \
+        OCI_MAX_ATTEMPTS=3); rc=$?
+[[ "$(grep -c 'transient failure' <<<"$out")" -eq 3 ]] \
+  && pass "connection timeout is retried, not fatal" \
+  || fail "connection timeout stopped the loop"
+[[ "$rc" -eq 4 ]] && pass "  ...and still exits non-zero when it gives up" \
+                  || fail "  ...exited $rc instead of 4"
+
 out=$(run "x" MOCK_LAUNCH_FAILS=99 MOCK_ERR_MSG="Compartment quota exceeded" MOCK_ERR_CODE=LimitExceeded MOCK_ERR_STATUS=409)
-grep -q 'non-capacity error, stopping' <<<"$out" && pass "quota error stops instead of retrying" \
+grep -q 'non-transient error, stopping' <<<"$out" && pass "quota error stops instead of retrying" \
                                              || fail "quota error did not stop the loop"
 
 out=$(run "x" MOCK_LAUNCH_FAILS=99 MOCK_EXISTING=ocid1.instance.oc1.me-abudhabi-1.alreadyhere)
@@ -154,13 +169,13 @@ grep -q 'reclaimed orphaned boot volume' <<<"$out" && pass "reclaims boot volume
                                                  || fail "dead instance leaked its boot volume"
 
 out=$(run "x" MOCK_LAUNCH_FAILS=99 OCI_MAX_ATTEMPTS=3); rc=$?
-[[ "$(grep -c 'capacity miss' <<<"$out")" -eq 3 ]] && pass "OCI_MAX_ATTEMPTS bounds the loop" \
+[[ "$(grep -c 'transient failure' <<<"$out")" -eq 3 ]] && pass "OCI_MAX_ATTEMPTS bounds the loop" \
                                                     || fail "OCI_MAX_ATTEMPTS not honoured"
 [[ "$rc" -eq 4 ]] && pass "giving up exits non-zero (no VM exists)" \
                   || fail "gave up but exited $rc, which reads as success"
 
 out=$(run "x" MOCK_LAUNCH_FAILS=99 -- --dry-run)
-grep -q 'nothing launched' <<<"$out" && ! grep -q 'capacity miss' <<<"$out" \
+grep -q 'nothing launched' <<<"$out" && ! grep -q 'transient failure' <<<"$out" \
   && pass "--dry-run launches nothing" || fail "--dry-run launched something"
 
 # ------------------------------------------------------- 4. real CLI surface

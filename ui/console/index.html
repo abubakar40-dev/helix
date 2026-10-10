@@ -842,45 +842,70 @@ $("#typebox").addEventListener("paste", e => {
 const GESTURE_URL = "http://127.0.0.1:8789/events";
 let gES = null;
 
-function setGesture(on){
-  const btn = $("#gestToggle"), st = $("#gestStatus");
-  if (on){
-    if (gES) return;
-    gES = new EventSource(GESTURE_URL);
-    btn.classList.add("live"); btn.textContent = "STOP GEST";
-    st.textContent = "starting camera…";
-    // State frames are written as bare `data:` lines with no `event:` name, so
-    // the browser delivers them as the default "message" event. Listening for a
-    // named "state" event silently never fired.
-    gES.onmessage = e=>{
-      let d; try{ d = JSON.parse(e.data); }catch{ return; }
-      if (d.error){ st.textContent = "gesture: " + d.error; btn.classList.remove("live");
-                    btn.classList.add("arm"); return; }
-      const g = d.last_gesture;
-      st.textContent = `${d.hands} hand${d.hands===1?"":"s"} · ${d.fps}fps · ${g}`;
-      st.style.color = g === "drag" ? "var(--am)" : g === "zoom" ? "var(--cy)" : "var(--dim)";
-    };
-    gES.addEventListener("drag", e=>{
-      let d; try{ d = JSON.parse(e.data); }catch{ return; }
-      if (orb) orb.rotateBy(d.dx * 2.2, d.dy * 2.2);
-    });
-    gES.addEventListener("zoom", e=>{
-      let d; try{ d = JSON.parse(e.data); }catch{ return; }
-      if (!orb) return;
-      if (d.delta > 0.008) orb.zoomIn(); else if (d.delta < -0.008) orb.zoomOut();
-    });
-    gES.onerror = () => {
-      st.textContent = "gesture service unreachable — is gesture.py running?";
-      btn.classList.remove("live"); btn.classList.add("arm");
-      gES.close(); gES = null;
-    };
-  } else {
-    if (gES){ gES.close(); gES = null; }
-    btn.classList.remove("live","arm"); btn.textContent = "GESTURE";
-    st.textContent = "";
-  }
+const gestBtn = () => $("#gestToggle");
+const gestStat = () => $("#gestStatus");
+
+function gestureOff(){
+  if (gES){ gES.close(); gES = null; }
+  const b = gestBtn();
+  if (b){ b.classList.remove("live","arm"); b.textContent = "GESTURE"; }
+  const st = gestStat();
+  if (st) st.textContent = "";
+  // The bridge owns the detector process; this is what actually releases the
+  // camera. Stopping the EventSource alone would leave it holding /dev/video0.
+  fetch("/gesture", {method:"POST", headers:{...H, "Content-Type":"application/json"},
+                     body: JSON.stringify({on:false})}).catch(()=>{});
 }
-$("#gestToggle").onclick = () => setGesture(!gES);
+
+function gestureOn(){
+  const b = gestBtn(), st = gestStat();
+  if (!b || gES) return;
+  b.classList.add("live"); b.textContent = "STOP GEST";
+  st.textContent = "starting camera…";
+  // Ask the bridge to start the detector FIRST. It waits for the port to answer
+  // before replying, so opening the EventSource after this cannot race startup
+  // and land on connection-refused.
+  fetch("/gesture", {method:"POST", headers:{...H, "Content-Type":"application/json"},
+                     body: JSON.stringify({on:true})})
+    .then(r => r.json())
+    .then(d => { if (!d.ok) throw new Error(d.detail || "start failed"); startStream(); })
+    .catch(e => {
+      if (st) st.textContent = "gesture: " + e.message;
+      if (b){ b.classList.remove("live"); b.classList.add("arm"); }
+    });
+}
+
+function startStream(){
+  const b = gestBtn(), st = gestStat();
+  gES = new EventSource(GESTURE_URL);
+  // State frames are written as bare `data:` lines with no `event:` name, so the
+  // browser delivers them as the default "message" event. Listening for a named
+  // "state" event silently never fired.
+  gES.onmessage = e => {
+    let d; try{ d = JSON.parse(e.data); }catch{ return; }
+    if (!st) return;
+    if (d.error){ st.textContent = "gesture: " + d.error;
+                  b && b.classList.add("arm"); return; }
+    const g = d.last_gesture;
+    st.textContent = `${d.hands} hand${d.hands===1?"":"s"} · ${d.fps}fps · ${g}`;
+    st.style.color = g === "drag" ? "var(--am)" : g === "zoom" ? "var(--cy)" : "var(--dim)";
+  };
+  gES.addEventListener("drag", e=>{
+    let d; try{ d = JSON.parse(e.data); }catch{ return; }
+    if (orb) orb.rotateBy(d.dx * 2.2, d.dy * 2.2);
+  });
+  gES.addEventListener("zoom", e=>{
+    let d; try{ d = JSON.parse(e.data); }catch{ return; }
+    if (!orb) return;
+    if (d.delta > 0.008) orb.zoomIn(); else if (d.delta < -0.008) orb.zoomOut();
+  });
+  gES.onerror = () => {
+    if (st) st.textContent = "gesture service unreachable";
+    if (b){ b.classList.remove("live"); b.classList.add("arm"); }
+    if (gES){ gES.close(); gES = null; }
+  };
+}
+$("#gestToggle").onclick = () => gES ? gestureOff() : gestureOn();
 
 /* ── real tool calls, from state.db via /activity ────────────────────── */
 let actMode = "voice";

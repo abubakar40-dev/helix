@@ -121,11 +121,27 @@ class Detector:
         prev_span = None
         frames, t0 = 0, time.time()
 
+        misses = 0
         while self.running:
             ok, frame = cap.read()
             if not ok:
-                self.state["error"] = "camera read failed"
+                # /dev/video0 is single-client. If anything else briefly holds it
+                # - the console's own /cam feed, a leftover ffmpeg - the read
+                # fails once and used to kill the detector for good, leaving it
+                # reporting stale hands/fps forever. Retry instead, and only
+                # give up after sustained failure.
+                misses += 1
+                if misses < 30:
+                    self.state["error"] = "camera busy, retrying"
+                    time.sleep(0.3)
+                    continue
+                self.state["error"] = "camera read failed %d times" % misses
+                self.state["hands"] = 0
+                self.state["fps"] = 0.0
                 break
+            misses = 0
+            if self.state["error"] in ("camera busy, retrying",):
+                self.state["error"] = ""
             frames += 1
             img = self.mp.Image(image_format=self.ImageFormat.SRGB,
                                 data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))

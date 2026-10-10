@@ -18,6 +18,7 @@ Quit = close the window. Reopening reloads the UI; the bridge sends
 Keys: Ctrl+R reload, Ctrl+Q quit, F11 fullscreen, Ctrl+Shift+I dev tools.
 """
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -33,6 +34,7 @@ APP_NAME = "HELIX"
 HERE = os.path.dirname(os.path.abspath(__file__))
 UNITS = ("helix-bridge", "helix-globe", "helix-live")
 LOG = os.path.expanduser("~/.local/share/helix-app.log")
+GESTURE_OFF_URL = "http://127.0.0.1:8787/gesture"
 
 # Window background matches --bg in the console CSS, so there is no white flash
 # between the window opening and the page painting.
@@ -159,6 +161,67 @@ class HelixWindow(Gtk.Window):
             self.fullscreen()
 
 
+def start_gesture():
+    """Run gesture control as a CHILD of this app, not as a login service.
+
+    It used to be `helix-gesture.service` under graphical-session.target, which
+    meant it held /dev/video0 from login until logout - the camera stayed live
+    long after HELIX was closed. That was reported as "it is still accessing the
+    camera even though I closed the app".
+
+    Owning it as a child process makes the lifetime structural: when this process
+    exits, the gesture process does too, with no systemd unit left enabled to
+    resurrect it.
+
+    Returns the Popen handle, or None if it could not start.
+    """
+    script = os.path.join(HERE, "gesture.py")
+    if not os.path.exists(script):
+        say("gesture.py not found; gesture control unavailable")
+        return None
+    # Must use the gesture venv's interpreter, not sys.executable. The app runs
+    # on /usr/bin/python3, which has PyGObject but not mediapipe - launching with
+    # it gave "model load failed: No module named 'mediapipe'" and a silent
+    # fps 0.0 detector that never touched the camera.
+    venv_python = os.path.expanduser(
+        "~/.local/share/helix-gesture-venv/bin/python")
+    python = venv_python if os.path.exists(venv_python) else sys.executable
+    if python == sys.executable:
+        say("gesture venv missing; hand tracking will not work")
+    try:
+        proc = subprocess.Popen(
+            [python, script],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)      # own process group: kill the whole tree
+        say("gesture control started as child pid %d with %s"
+            % (proc.pid, python))
+        return proc
+    except OSError as exc:
+        say("gesture control failed to start: %s" % exc)
+        return None
+
+
+def stop_gesture(proc):
+    """Release the camera. Group-kill, so ffmpeg/whisper children go too."""
+    if proc is None or proc.poll() is not None:
+        return
+    say("releasing camera (killing gesture pid %d)" % proc.pid)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                proc.send_signal(sig)
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=4)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+    say("gesture did not exit")
+
+
 def main():
     # Own process/app identity: without this GNOME groups the window under
     # whatever generic binary name and shows no matching dock icon.
@@ -168,10 +231,48 @@ def main():
     say("--- starting %s ---" % APP_NAME)
     ensure_backend()
 
+    # Gesture is NOT started automatically. It used to run from login to logout
+    # and hold the camera the whole time; now the console's GESTURE button starts
+    # it through the bridge. Opening the app must not touch the camera.
+    gesture = None
+
+    def release_camera():
+        """Backstop: even if something re-enabled gesture, quitting releases it.
+
+        The bridge owns the gesture process now, so this asks it to stop. The
+        local child handle is stopped too for the case where the bridge is down.
+        """
+        stop_gesture(gesture)
+        try:
+            req = urllib.request.Request(
+                GESTURE_OFF_URL, data=b'{"on":false}',
+                headers={"X-Helix-Voice": "1", "Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=4).read()
+            say("camera released via bridge on exit")
+        except Exception as exc:               # noqa: BLE001
+            say("camera release call failed: %s" % exc)
+
+    def shutdown(*_):
+        # Runs on window close AND on SIGTERM/SIGINT, so closing the window,
+        # killing the app, or logging out all release the camera.
+        release_camera()
+        if Gtk.main_level() > 0:
+            Gtk.main_quit()
+        # Measured: Gtk.main_quit() released the camera but the process stayed
+        # alive - WebKit's web-process keeps the loop referenced. The camera is
+        # already released by this point, so exit hard rather than linger as a
+        # windowless process holding nothing but memory.
+        GLib.timeout_add(500, lambda: (os._exit(0), False)[1])
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        GLib.unix_signal_add(GLib.PRIORITY_HIGH, sig, shutdown)
+
     win = HelixWindow()
+    win.connect("destroy", lambda *_: release_camera())
     win.show_all()
     win.web.load_uri(URL)
     Gtk.main()
+    release_camera()
     say("exited")
     return 0
 

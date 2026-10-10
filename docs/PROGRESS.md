@@ -5069,3 +5069,63 @@ The 13px statusbar leaves 12px of content box. The text fills it exactly and
 reads tight, which is the honest consequence of matching the reference height -
 `line-height` is pinned to 12px so nothing is clipped, and the avatar shrank from
 22px to 9px because at 22px it alone was taller than the whole strip.
+
+## Camera leak fixed: it no longer survives closing the app
+
+User: "turn off the camera access as I close the helix app, it's still accessing
+the camera even though I closed the app".
+
+### Root cause
+`helix-gesture.service` was a systemd **user** unit bound to
+`graphical-session.target`, so gesture control started at login and held
+`/dev/video0` until logout - completely independent of whether HELIX was open.
+Confirmed at the time of the report: `/dev/video0` held by pid 4452, service
+active, app long closed.
+
+Immediate relief: stopped and disabled the unit, deleted the unit file. Camera
+released, `is-enabled` now `not-found`.
+
+### The fix: gesture is on demand, and the app owns the teardown
+The unit is gone. Nothing touches the camera until someone asks for gesture
+control.
+
+- `bridge/server.py` gains `/gesture`: `GET` returns state, `POST {"on":true}`
+  starts the detector, `POST {"on":false}` stops it. It starts with the gesture
+  **venv's** interpreter, and waits for port 8789 to answer before replying.
+- The console's GESTURE button drives the bridge, then opens the SSE stream.
+  Closing the stream alone would NOT release the camera - that was the point.
+- `tools/helix_app.py` releases the camera on exit via the same endpoint, wired
+  to window close AND SIGTERM/SIGINT.
+
+### Three bugs found while verifying, not by reading
+1. **False success from the wrong process.** `gesture_start()` confirms readiness
+   by polling 8789 - but an orphan from an earlier manual run held that port, so
+   the poll got a *reply from the wrong process* and reported "started" while the
+   new detector had died on a bind error. It now clears the port first
+   (`fuser -k -TERM 8789/tcp`).
+2. **Permanent death on one transient failure.** `/dev/video0` is single-client;
+   if anything else held it briefly, `cap.read()` failed once and the detector
+   stopped for good, leaving stale `hands 1 fps 10.1` in its state forever. It now
+   retries for 9s and clears the counters if it really is broken.
+3. **Wrong interpreter.** The app launched gesture with `sys.executable`
+   (`/usr/bin/python3`), which has PyGObject but not mediapipe:
+   `model load failed: No module named 'mediapipe'`, fps 0.0, camera never
+   touched. Now uses the gesture venv explicitly.
+
+Also: `gesture_stop()` left a process alive, and `os._exit(0)` after
+`Gtk.main_quit()` because WebKit's web process keeps the loop referenced.
+
+### Verified end to end, not inferred
+```
+STATE A  nothing running              camera holders 0
+STATE B  GESTURE button pressed       camera HELD by 50864 (bridge-owned)
+         app opened                   camera holders 0   <- opening touches nothing
+         gesture on                   camera HELD by 140747
+         app closed (SIGTERM)         gesture procs 0
+                                       CAMERA HOLDERS  0
+         log: "camera released via bridge on exit"
+```
+
+The earlier "camera read failed with hands 1 fps 10.1" readings were stale
+counters from a dead detector, not a live one - the numbers looked healthy, which
+is exactly why the state needed a real fd scan rather than a JSON read.

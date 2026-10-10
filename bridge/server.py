@@ -18,6 +18,7 @@ import os
 import re
 import select
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -245,6 +246,97 @@ def _cam_kill_all():
         except OSError:
             pass
     CAM_PROCS.clear()
+
+
+# ── gesture control lifecycle ────────────────────────────────────────────────
+# Gesture used to be a systemd user service bound to graphical-session.target, so
+# it held /dev/video0 from login to logout and the camera stayed live long after
+# HELIX was closed. It is now started and stopped on demand instead: nothing
+# touches the camera until someone actually asks for gesture control, and
+# switching it off - or quitting the app - releases it immediately.
+GESTURE_PY = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "tools", "gesture.py")          # bridge/ -> helix/ -> tools/
+GESTURE_PYTHON = os.path.expanduser(
+    "~/.local/share/helix-gesture-venv/bin/python")
+GESTURE_PROC = []
+
+
+def gesture_state():
+    proc = GESTURE_PROC[0] if GESTURE_PROC else None
+    running = proc is not None and proc.poll() is None
+    return {"on": running, "pid": proc.pid if running else None}
+
+
+def gesture_stop():
+    """Release the camera. Group-kill so any child of the detector goes too."""
+    stopped = False
+    for proc in list(GESTURE_PROC):
+        if proc.poll() is not None:
+            continue
+        stopped = True
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(os.getpgid(proc.pid), sig)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    proc.send_signal(sig)
+                except OSError:
+                    pass
+            try:
+                proc.wait(timeout=4)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    GESTURE_PROC.clear()
+    return stopped
+
+
+def gesture_start(timeout=15.0):
+    """Start the detector and wait until its port answers.
+
+    Returns (ok, detail). Waits for the socket rather than returning
+    immediately, because the caller connects an EventSource straight afterwards
+    and would otherwise just see a connection refused.
+    """
+    st = gesture_state()
+    if st["on"]:
+        return True, "already running"
+    # Clear anything else squatting on 8789 first. gesture_start confirms
+    # readiness by polling the port, so a stale process holding it answered that
+    # poll and produced a FALSE SUCCESS - the new detector could not bind and
+    # died, while the caller was told it had started. An orphan from an earlier
+    # run was doing exactly this.
+    try:
+        subprocess.run(["fuser", "-k", "-TERM", "8789/tcp"],
+                       capture_output=True, timeout=5)
+        time.sleep(0.6)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if not os.path.exists(GESTURE_PY):
+        return False, "gesture.py not found"
+    if not os.path.exists(GESTURE_PYTHON):
+        return False, "gesture venv missing (no mediapipe)"
+    try:
+        proc = subprocess.Popen(
+            [GESTURE_PYTHON, GESTURE_PY],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+    except OSError as exc:
+        return False, str(exc)
+    GESTURE_PROC.append(proc)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            GESTURE_PROC.clear()
+            return False, "gesture exited immediately (rc=%s)" % proc.returncode
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:8789/", timeout=1) as r:
+                r.read(1)
+            return True, "started pid %d" % proc.pid
+        except Exception:
+            time.sleep(0.4)
+    return False, "gesture did not answer on 8789 in %.0fs" % timeout
 
 
 def camera_stream(handler, dev=None, size="320x240", fps=5):
@@ -898,6 +990,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(headlines())
         if path == "/cortex":
             return self._send_json(cortex())
+        if path == "/gesture":
+            return self._send_json({"ok": True, "state": gesture_state()})
         if path == "/activity":
             return self._send_json(activity())
         if path == "/cam":
@@ -914,7 +1008,7 @@ class Handler(BaseHTTPRequestHandler):
         # here. Any page in any browser can POST to 127.0.0.1, so requiring a custom
         # header forces a CORS preflight that we never answer — a foreign page then
         # cannot make the browser send it.
-        if self.path.split("?", 1)[0] not in ("/say", "/stt", "/tts", "/upload"):
+        if self.path.split("?", 1)[0] not in ("/say", "/stt", "/tts", "/upload", "/gesture"):
             return self.send_error(404)
         if self.headers.get("X-Helix-Voice") != "1":
             return self._send_json({"ok": False, "error": "missing X-Helix-Voice header"}, 403)
@@ -942,6 +1036,19 @@ class Handler(BaseHTTPRequestHandler):
                                     "name": info["name"], "size": info["size"],
                                     "task": task.get("task"),
                                     "taskError": task.get("error")})
+        if self.path.split("?", 1)[0] == "/gesture":
+            try:
+                want = json.loads(self.rfile.read(
+                    int(self.headers.get("Content-Length") or 0)) or b"{}")
+            except ValueError:
+                return self._send_json({"ok": False, "error": "bad json"}, 400)
+            if want.get("on"):
+                ok, detail = gesture_start()
+            else:
+                detail = "released" if gesture_stop() else "was not running"
+                ok = True
+            return self._send_json({"ok": ok, "detail": detail,
+                                    "state": gesture_state()})
         n = int(self.headers.get("Content-Length") or 0)
         is_stt = self.path.split("?", 1)[0] == "/stt"
         is_tts = self.path.split("?", 1)[0] == "/tts"

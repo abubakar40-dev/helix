@@ -47,6 +47,20 @@ check_err "429 throttling"                            '{"code":"TooManyRequests"
 check_err "capacity as plain text, not JSON"          'ServiceError: Out of host capacity' retry
 # the real one that killed a 75 minute run
 check_err "RequestException connection timed out"     '{"message":"The connection to endpoint timed out.","target_service":"CLI"}' retry
+# the real one that killed a systemd run: OCI prefixes the JSON with a bare
+# "ServiceError:" line, which makes it unparseable unless stripped first
+check_err "ServiceError-prefixed 429"                 'ServiceError:
+{
+    "code": "TooManyRequests",
+    "message": "Too many requests for the user",
+    "status": 429
+}' retry
+check_err "ServiceError-prefixed quota"               'ServiceError:
+{
+    "code": "LimitExceeded",
+    "message": "Compartment quota exceeded for instance count",
+    "status": 409
+}' stop
 check_err "connection refused"                        '{"code":"ConnectionRefused","message":"Connection refused"}' retry
 check_err "503 service unavailable"                   '{"code":"ServiceUnavailable","message":"Service unavailable","status":503}' retry
 check_err "502 bad gateway"                           '{"code":"BadGateway","message":"Bad gateway","status":502}' retry
@@ -83,7 +97,9 @@ case "$1 $2" in
       launch)
         n=$((n+1)); echo "$n" > "$MOCK_STATE"
         if (( n <= ${MOCK_LAUNCH_FAILS:-0} )); then
-          printf '{"code":"%s","message":"%s","status":%s}\n' \
+          # OCI prints a bare "ServiceError:" line before the JSON. A mock that omits
+          # it hides the fact that jq cannot parse the whole blob.
+          printf 'ServiceError:\n{\n    "code": "%s",\n    "message": "%s",\n    "status": %s\n}\n' \
             "${MOCK_ERR_CODE:-InternalError}" "${MOCK_ERR_MSG:-Out of host capacity.}" \
             "${MOCK_ERR_STATUS:-500}" >&2
           exit 1
@@ -92,9 +108,9 @@ case "$1 $2" in
       get) echo "${MOCK_GET_STATE:-RUNNING}" ;;
       list)
         if [[ -n "${MOCK_EXISTING:-}" ]]; then
-          echo "{\"data\":[{\"id\":\"$MOCK_EXISTING\",\"displayName\":\"helix-a1\",\"lifecycleState\":\"RUNNING\",\"shape\":\"VM.Standard.A1.Flex\",\"shapeConfig\":{\"ocpus\":1,\"memoryInGBs\":6}}]}"
+          echo "{\"data\":[{\"id\":\"$MOCK_EXISTING\",\"display-name\":\"helix-a1\",\"lifecycle-state\":\"RUNNING\",\"shape\":\"VM.Standard.A1.Flex\",\"shape-config\":{\"ocpus\":1,\"memoryInGBs\":6}}]}"
         elif [[ -n "${MOCK_A1_OCPU:-}" ]]; then
-          echo "{\"data\":[{\"id\":\"ocid1.instance.oc1.me-abudhabi-1.old\",\"displayName\":\"other-a1\",\"lifecycleState\":\"RUNNING\",\"shape\":\"VM.Standard.A1.Flex\",\"shapeConfig\":{\"ocpus\":$MOCK_A1_OCPU,\"memoryInGBs\":6}}]}"
+          echo "{\"data\":[{\"id\":\"ocid1.instance.oc1.me-abudhabi-1.old\",\"display-name\":\"other-a1\",\"lifecycle-state\":\"RUNNING\",\"shape\":\"VM.Standard.A1.Flex\",\"shape-config\":{\"ocpus\":$MOCK_A1_OCPU,\"memoryInGBs\":6}}]}"
         else
           echo '{"data":[]}'
         fi ;;

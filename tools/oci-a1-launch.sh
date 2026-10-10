@@ -77,7 +77,10 @@ o() { oci "${OCI_ARGS[@]}" --max-retries 1 "$@"; }
 ol() { local path=$1; shift; o "$@" --output json 2>/dev/null | jq -r ".data[]${path}"; }
 
 # OCI writes errors as JSON on stderr; fall back to raw text when it is not JSON.
-err_field() { printf '%s' "$1" | jq -r ".${2} // empty" 2>/dev/null; }
+# OCI prints "ServiceError:" on its own line before the JSON body, which makes the
+# whole thing invalid JSON. Strip up to the first brace before parsing, or every
+# field (including `status`) silently comes back empty and a 429 reads as fatal.
+err_field() { printf '%s' "$1" | awk '/^\{/{f=1} f' | jq -r ".${2} // empty" 2>/dev/null; }
 
 # Retry only what is genuinely transient: capacity, throttling, and transport
 # failures. A dropped connection is ambiguous - the launch may have been accepted
@@ -173,8 +176,8 @@ log "subnet   : $SUBNET_ID"
 sum_a1() {
   local v
   v=$(o compute instance list --compartment-id "$COMPARTMENT" --output json 2>/dev/null \
-      | jq -r --arg s "$SHAPE" '[.data[] | select(.lifecycleState != "TERMINATED" and .shape == $s)
-                                 | .shapeConfig.'"$1"' // 0] | add // 0 | floor')
+      | jq -r --arg s "$SHAPE" '[.data[] | select(.["lifecycle-state"] != "TERMINATED" and .shape == $s)
+                                 | .["shape-config"].'"$1"' // 0] | add // 0 | floor')
   [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo 0
 }
 used_ocpu=$(sum_a1 ocpus); used_mem=$(sum_a1 memoryInGBs)
@@ -185,17 +188,22 @@ else
 fi
 
 # Image: newest Canonical Ubuntu for this region, resolved at runtime because OCIDs
-# are regional and Canonical rotates the image. Must be the aarch64 build: A1 is
-# ARM, and an x86_64 Ubuntu image will not boot on it.
+# are regional and Canonical rotates the image. Architecture must match the shape or
+# the instance never boots: A1/A2 are ARM (aarch64 in the display name), everything
+# else is x86_64 (no arch suffix). Canonical ships both under the same version.
+case "$SHAPE" in *A1*|*A2*) NEED_ARM=true ;; *) NEED_ARM=false ;; esac
 IMAGE_ID="${OCI_IMAGE_ID:-}"
+IMAGE_NAME="$UBUNTU"
 if [[ -z "$IMAGE_ID" ]]; then
-  IMAGE_ID=$(o compute image list --compartment-id "$COMPARTMENT" --operating-system "Canonical Ubuntu" \
-    --output json 2>/dev/null | jq -r --arg v "$UBUNTU" \
-      '[.data[] | select(.["operating-system-version"] == $v and (.["display-name"] | test("aarch64")))]
-       | sort_by(.["time-created"]) | last | .id // empty')
-  [[ "$IMAGE_ID" == ocid1.image.* ]] || die "no Canonical Ubuntu $UBUNTU aarch64 image in $REGION (set OCI_UBUNTU_VERSION or OCI_IMAGE_ID)"
+  IMAGE_JSON=$(o compute image list --compartment-id "$COMPARTMENT" --operating-system "Canonical Ubuntu" --output json 2>/dev/null)
+  IMAGE_ID=$(jq -r --arg v "$UBUNTU" --argjson arm "$NEED_ARM" \
+      '[.data[] | select(.["operating-system-version"] == $v
+                         and ((.["display-name"] | test("aarch64")) == $arm))]
+       | sort_by(.["time-created"]) | last | .id // empty' <<<"$IMAGE_JSON")
+  [[ "$IMAGE_ID" == ocid1.image.* ]] || die "no Canonical Ubuntu $UBUNTU $( [[ $NEED_ARM == true ]] && echo aarch64 || echo x86_64 ) image in $REGION (set OCI_UBUNTU_VERSION or OCI_IMAGE_ID)"
+  IMAGE_NAME=$(jq -r '.data[] | select(.id == $i) | .["display-name"] // "Ubuntu"' --arg i "$IMAGE_ID" <<<"$IMAGE_JSON")
 fi
-log "image    : $IMAGE_ID"
+log "image    : $IMAGE_ID ($IMAGE_NAME)"
 
 # Wait for RUNNING. 0 = running, 1 = dead (capacity died after launch), 2 = timeout.
 wait_running() {
@@ -233,13 +241,15 @@ cleanup_boot_volume() {
 }
 
 report_ip() {
-  local ip
+  local ip user
   ip=$(o compute instance list-vnics --instance-id "$1" --query 'data[0]."public-ip"' --raw-output 2>/dev/null)
+  # Ubuntu images reject opc; Oracle Linux rejects ubuntu.
+  case "$IMAGE_NAME" in *Ubuntu*) user=ubuntu ;; *) user=opc ;; esac
   echo
   log "======================================================"
   log "LAUNCHED after $ATTEMPT attempt(s), $(((SECONDS - STARTED_AT) / 60)) min"
   log "public IP : ${ip:-<not assigned yet, check the Console>}"
-  log "ssh       : ssh -i ${SSH_KEY%.pub} opc@${ip:-<ip>}"
+  log "ssh       : ssh -i ${SSH_KEY%.pub} ${user}@${ip:-<ip>}"
   log "======================================================"
 }
 
@@ -269,16 +279,19 @@ while :; do
   # Adopt an existing instance instead of launching a duplicate. Guard on the OCID
   # shape so stray output is never mistaken for an instance id.
   INST_ID=$(o compute instance list --compartment-id "$COMPARTMENT" --output json 2>/dev/null \
-            | jq -r '.data[] | select(.displayName == $n and .lifecycleState != "TERMINATED") | .id' \
-                  --arg n "$DISPLAY_NAME" | head -1)
+            | jq -r --arg n "$DISPLAY_NAME" '.data[] | select(.["display-name"] == $n and .["lifecycle-state"] != "TERMINATED") | .id' \
+                  | head -1)
   if [[ -n "$INST_ID" ]]; then
     log "existing instance $INST_ID found, adopting it"
   else
+    # Fixed shapes (VM.Standard.E2.1.Micro) reject --shape-config; only Flex takes it.
+    SHAPE_ARGS=()
+    [[ "$SHAPE" == *Flex ]] && SHAPE_ARGS=(--shape-config "{\"ocpus\":$OCPUS,\"memoryInGBs\":$MEMORY_GB}")
     OUT=$(o compute instance launch \
       --compartment-id "$COMPARTMENT" \
       --availability-domain "$AD" \
       --shape "$SHAPE" \
-      --shape-config "{\"ocpus\":$OCPUS,\"memoryInGBs\":$MEMORY_GB}" \
+      "${SHAPE_ARGS[@]}" \
       --image-id "$IMAGE_ID" \
       --subnet-id "$SUBNET_ID" \
       --display-name "$DISPLAY_NAME" \

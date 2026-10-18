@@ -83,20 +83,56 @@ def _connect():
 def _profile_state(conn, pid):
     """(status, current_task) for one profile id."""
     busy = conn.execute(
-        "SELECT id,title FROM tasks WHERE assignee=? AND status=? "
+        "SELECT id,title,status,last_heartbeat_at,current_run_id,result "
+        "FROM tasks WHERE assignee=? AND status=? "
         "ORDER BY started_at DESC LIMIT 1", (pid, BUSY)
     ).fetchone()
     if busy:
-        return "working", {"id": busy[0], "title": busy[1]}
+        event = conn.execute(
+            "SELECT kind,payload,created_at FROM task_events "
+            "WHERE task_id=? ORDER BY id DESC LIMIT 1", (busy[0],)
+        ).fetchone()
+        return "working", _task_progress(busy, event)
 
     stuck = conn.execute(
-        "SELECT id,title FROM tasks WHERE assignee=? AND status=? "
+        "SELECT id,title,status,last_heartbeat_at,current_run_id,result "
+        "FROM tasks WHERE assignee=? AND status=? "
         "ORDER BY created_at DESC LIMIT 1", (pid, STUCK)
     ).fetchone()
     if stuck:
-        return "blocked", {"id": stuck[0], "title": stuck[1]}
+        event = conn.execute(
+            "SELECT kind,payload,created_at FROM task_events "
+            "WHERE task_id=? ORDER BY id DESC LIMIT 1", (stuck[0],)
+        ).fetchone()
+        return "blocked", _task_progress(stuck, event)
 
     return "idle", None
+
+
+def _task_progress(task_row, event_row=None):
+    """Return a small, factual progress object for the UI and status replies."""
+    task_id, title, status, heartbeat, run_id, result = task_row
+    progress = {
+        "id": task_id,
+        "title": title,
+        "status": status,
+        "run_id": run_id,
+        "last_heartbeat_at": heartbeat,
+        "result": (result or "").strip()[:1200],
+    }
+    if event_row:
+        kind, payload, created_at = event_row
+        progress["last_event"] = {
+            "kind": kind,
+            "detail": payload or "",
+            "at": created_at,
+        }
+        if not progress["result"] and kind == "completed":
+            try:
+                progress["result"] = (json.loads(payload or "{}").get("summary") or "")[:1200]
+            except (TypeError, ValueError):
+                pass
+    return progress
 
 
 def snapshot():
@@ -123,6 +159,10 @@ def snapshot():
     return out
 
 
+_runtime_cache = {"at": 0, "data": None}
+RUNTIME_TTL = 5.0  # seconds; avoid re-parsing yaml & sqlite every single second
+
+
 def runtime_info():
     """Model actually in use + live context usage, for the status bar.
 
@@ -130,37 +170,43 @@ def runtime_info():
     forever. Both numbers here are measured, not labelled: the model is the
     resolved `model.default` of the profile that owns the gateway, and the token
     count is `gateway_routing.last_prompt_tokens` - the same column the watchdog
-    reads. Never raises: a status bar is not worth a 500.
+    reads. Cached for 5s to avoid disk/SQLite thrashing every second in the SSE loop.
     """
+    now = time.time()
+    if _runtime_cache["data"] and (now - _runtime_cache["at"] < RUNTIME_TTL):
+        return dict(_runtime_cache["data"])
+
     info = {"model": "", "ctx": None, "ctx_max": 200000}
     try:
         import yaml  # only needed here; the rest of the bridge stays stdlib
         cfg = os.path.join(HERMES_HOME, "config.yaml")
         if os.path.exists(cfg):
-            info["model"] = (yaml.safe_load(open(cfg)) or {}).get("model", {}).get("default", "")
+            with open(cfg, "r", encoding="utf-8") as f:
+                info["model"] = (yaml.safe_load(f) or {}).get("model", {}).get("default", "")
     except Exception:
         pass
-    # last_prompt_tokens is NOT a column: gateway_routing is
-    # (scope, session_key, entry_json, updated_at) and the number lives inside
-    # the JSON. I first queried it as a column; the sqlite error was swallowed
-    # by a bare except and the status bar reported a confident, invented 0.
-    # A wrong measurement dressed as a real one is the failure mode this project
-    # keeps paying for, so a failure here reports "unknown", never a number.
+
     info["ctx"] = None
     try:
         db = os.path.join(HERMES_HOME, "state.db")
-        c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        best = 0
-        for (ej,) in c.execute("SELECT entry_json FROM gateway_routing "
-                               "ORDER BY updated_at DESC LIMIT 25"):
+        if os.path.exists(db):
+            c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
             try:
-                best = max(best, int(json.loads(ej).get("last_prompt_tokens") or 0))
-            except (TypeError, ValueError):
-                continue
-        c.close()
-        info["ctx"] = best
+                best = 0
+                for (ej,) in c.execute("SELECT entry_json FROM gateway_routing "
+                                       "ORDER BY updated_at DESC LIMIT 25"):
+                    try:
+                        best = max(best, int(json.loads(ej).get("last_prompt_tokens") or 0))
+                    except (TypeError, ValueError):
+                        continue
+                info["ctx"] = best
+            finally:
+                c.close()
     except Exception:
         info["ctx"] = None
+
+    _runtime_cache["at"] = now
+    _runtime_cache["data"] = dict(info)
     return info
 
 
@@ -539,27 +585,41 @@ def task(task_id):
     task_id = (task_id or "").strip()
     if not re.fullmatch(r"t_[0-9a-f]{4,32}", task_id):
         return {"ok": False, "error": "bad task id"}
-    out = subprocess.run(["hermes", "kanban", "show", task_id],
-                         capture_output=True, text=True, timeout=60)
-    if out.returncode != 0:
-        return {"ok": False, "error": (out.stderr or out.stdout).strip()[:200]}
-    text = out.stdout
-    status = ""
-    m = re.search(r"^\s*status:\s*(\S+)", text, re.M)
-    if m:
-        status = m.group(1)
-    # The completed event carries the authoritative summary; prefer it over the
-    # "Latest summary" block, which can lag or be truncated in a long listing.
-    summary = ""
-    ms = re.search(r"'summary':\s*\"(.*?)\"\s*(?:,|\})", text, re.S)
-    if ms:
-        summary = ms.group(1)
-    if not summary:
-        m2 = re.search(r"Latest summary:\s*\n(.+)", text)
-        if m2:
-            summary = m2.group(1).strip()
-    return {"ok": True, "task": task_id, "status": status or "unknown",
-            "summary": summary.strip()[:1200]}
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT id,title,status,last_heartbeat_at,current_run_id,result "
+            "FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()
+        if not row:
+            return {"ok": False, "error": "task not found"}
+        events = conn.execute(
+            "SELECT kind,payload,created_at FROM task_events "
+            "WHERE task_id=? ORDER BY id DESC LIMIT 12", (task_id,)
+        ).fetchall()
+        comments = conn.execute(
+            "SELECT author,body,created_at FROM task_comments "
+            "WHERE task_id=? ORDER BY id DESC LIMIT 8", (task_id,)
+        ).fetchall()
+    finally:
+        conn.close()
+
+    progress = _task_progress(row, events[0] if events else None)
+    progress["events"] = [
+        {"kind": kind, "detail": payload or "", "at": created_at}
+        for kind, payload, created_at in reversed(events)
+    ]
+    progress["comments"] = [
+        {"author": author, "body": body, "at": created_at}
+        for author, body, created_at in reversed(comments)
+    ]
+    return {
+        "ok": True,
+        "task": task_id,
+        "status": row[2],
+        "summary": progress["result"],
+        "progress": progress,
+    }
 
 
 INBOX = os.path.expanduser("~/helix/inbox")
@@ -654,10 +714,21 @@ def read_multipart(handler, dest_dir):
             if size >= 2:
                 with open(path, "r+b") as f:
                     f.seek(-2, os.SEEK_END)
-                    if f.read(2) == b"\r\n":
+                    tail_bytes = f.read(2)
+                    if tail_bytes == b"\r\n":
                         f.seek(-2, os.SEEK_END)
                         f.truncate()
                         size -= 2
+                    elif tail_bytes.endswith(b"\n"):
+                        f.seek(-1, os.SEEK_END)
+                        f.truncate()
+                        size -= 1
+            elif size == 1:
+                with open(path, "r+b") as f:
+                    if f.read(1) == b"\n":
+                        f.seek(0)
+                        f.truncate(0)
+                        size = 0
         elif nm:
             buf = []
             while True:
@@ -931,14 +1002,19 @@ def _selftest():
         c = sqlite3.connect(path)
         c.execute(
             "CREATE TABLE tasks (id TEXT,title TEXT,assignee TEXT,status TEXT,"
-            "created_at INTEGER,started_at INTEGER)"
+            "created_at INTEGER,started_at INTEGER,last_heartbeat_at INTEGER,"
+            "current_run_id INTEGER,result TEXT)"
+        )
+        c.execute(
+            "CREATE TABLE task_events (id INTEGER PRIMARY KEY,task_id TEXT,"
+            "kind TEXT,payload TEXT,created_at INTEGER)"
         )
         rows = [
-            ("t1", "running task", "pc", "running", 1, 1),
-            ("t2", "old stuck", "research", "blocked", 1, None),
-            ("t3", "finished", "helix", "done", 1, None),
+            ("t1", "running task", "pc", "running", 1, 1, 1, 1, ""),
+            ("t2", "old stuck", "research", "blocked", 1, None, 1, None, ""),
+            ("t3", "finished", "helix", "done", 1, None, None, None, ""),
         ]
-        c.executemany("INSERT INTO tasks VALUES (?,?,?,?,?,?)", rows)
+        c.executemany("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?)", rows)
         c.commit()
         c.close()
 

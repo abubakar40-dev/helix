@@ -1,0 +1,16 @@
+[Unit]
+Description=Helix gesture control (camera hand tracking -> SSE)
+After=graphical-session.target helix-bridge.service
+Wants=helix-bridge.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/helix
+ExecStart=%h/.local/share/helix-gesture/venv-system/bin/python %h/helix/tools/gesture.py --host 127.0.0.1 --port 8789
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+MemoryMax=350M
+
+[Install]
+WantedBy=default.target

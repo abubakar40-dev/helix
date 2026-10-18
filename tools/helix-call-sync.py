@@ -5,7 +5,7 @@ Runs on the laptop, not the box: state.db lives here and nowhere else. Every cal
 becomes a source='phone' session that FTS already indexes, so HELIX recalls it
 alongside cli, cron and kanban history with no separate store to drift.
 """
-import json, os, subprocess, sys, urllib.request
+import json, os, subprocess, sys, urllib.parse, urllib.request
 
 BOX = os.environ.get("HELIX_BOX", "https://129-151-148-112.sslip.io")
 HERE = os.path.dirname(os.path.abspath(__file__))

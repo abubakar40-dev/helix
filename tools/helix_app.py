@@ -268,11 +268,11 @@ def main():
         GLib.unix_signal_add(GLib.PRIORITY_HIGH, sig, shutdown)
 
     win = HelixWindow()
-    win.connect("destroy", lambda *_: release_camera())
+    win.connect("destroy", shutdown)
     win.show_all()
     win.web.load_uri(URL)
     Gtk.main()
-    release_camera()
+    shutdown()
     say("exited")
     return 0
 

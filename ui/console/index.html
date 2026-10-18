@@ -834,6 +834,91 @@ $("#typebox").addEventListener("paste", e => {
   const it = [...(e.clipboardData?.items||[])].find(i => i.type.startsWith("image/"));
   if (it){ e.preventDefault(); upload(it.getAsFile()); } });
 
+/* ── #micBtn — voice input (Gemini Live primary, Whisper offline fallback) ─
+   Strategy:
+     1. Probe the Gemini Live proxy (ws://127.0.0.1:8788) with a brief WS open.
+     2. If Live is up → open /voice-core/ in a popup (full live session: wake word,
+        barge-in, TTS reply) and switch console to VOICE tab.
+     3. If Live is unreachable (offline / service down) → MediaRecorder → POST /stt
+        (local Whisper) → put transcript in typebox → ask().
+   Hold-to-record (whisper mode): pointerdown starts, pointerup stops.             */
+
+let micRec = false, micStream = null, micChunks = [], micMR = null;
+const micBtn = $("#micBtn");
+
+function micBtnRecording(on){
+  micBtn.classList.toggle("live", on);
+  micBtn.title = on ? "Release to send (offline Whisper mode)" : "Voice input";
+}
+
+/* ---- offline fallback: MediaRecorder → /stt → typebox ---- */
+async function micStartWhisper(){
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch(e){ log("mic: " + e.message, "bad"); return; }
+  micChunks = [];
+  micMR = new MediaRecorder(micStream);
+  micMR.ondataavailable = e => { if (e.data.size) micChunks.push(e.data); };
+  micMR.onstop = async () => {
+    micBtnRecording(false);
+    micStream.getTracks().forEach(t => t.stop());
+    const blob = new Blob(micChunks, { type: micMR.mimeType || "audio/webm" });
+    const fd = new FormData(); fd.append("file", blob, "rec.webm");
+    log("sending to Whisper /stt…", "info");
+    try {
+      const r = await fetch("/stt", { method: "POST", body: fd });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const d = await r.json();
+      const txt = (d.text || "").trim();
+      if (txt){ $("#typebox").value = txt; ask(txt); }
+      else log("whisper: empty transcript", "bad");
+    } catch(e2){ log("whisper /stt: " + e2.message, "bad"); }
+  };
+  micMR.start();
+  micBtnRecording(true);
+  micRec = true;
+}
+
+function micStopWhisper(){
+  if (micMR && micMR.state === "recording") micMR.stop();
+  micRec = false;
+}
+
+/* probe Gemini Live reachability (cached 8 s) */
+let _liveOk = null, _liveProbedAt = 0;
+function probeLive(){
+  const now = Date.now();
+  if (_liveOk !== null && now - _liveProbedAt < 8000) return Promise.resolve(_liveOk);
+  return new Promise(res => {
+    const ws = new WebSocket("ws://127.0.0.1:8788");
+    const t = setTimeout(() => { ws.close(); cache(false); }, 2500);
+    ws.onopen  = () => { clearTimeout(t); ws.close(); cache(true);  };
+    ws.onerror = () => { clearTimeout(t); cache(false); };
+    function cache(v){ _liveOk = v; _liveProbedAt = Date.now(); res(v); }
+  });
+}
+
+function switchToVoiceTab(){
+  const vt = document.querySelector("#tabs .tab[data-c='voice']");
+  if (vt) vt.click();
+}
+
+micBtn.addEventListener("pointerdown", e => {
+  e.preventDefault();
+  probeLive().then(live => {
+    if (live){
+      switchToVoiceTab();
+      window.open("/voice-core/", "helix-voice", "width=560,height=720,noopener");
+      log("Gemini Live ready — opened voice-core", "ok");
+    } else {
+      log("Live offline → whisper push-to-talk (hold mic, release to send)", "info");
+      micStartWhisper();
+    }
+  });
+});
+micBtn.addEventListener("pointerup",     () => { if (micRec) micStopWhisper(); });
+micBtn.addEventListener("pointercancel", () => { if (micRec) micStopWhisper(); });
+
 /* ── gesture control: webcam hand tracking drives the orb ────────────────
    Events come from tools/gesture.py over SSE (127.0.0.1:8789). One hand pinched
    = grab, motion rotates; two hands = their spacing zooms; a fist releases.

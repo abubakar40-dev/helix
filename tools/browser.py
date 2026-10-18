@@ -90,6 +90,15 @@ def route_for(url):
     return "chrome"
 
 
+def subprofile_for(browser, url=""):
+    if browser == "chrome":
+        for host, prof in CHROME_SUBPROFILE.items():
+            if host in url:
+                return prof
+        return DEFAULT_SUBPROFILE
+    return "Default"
+
+
 def real_profile(browser):
     """Snap revision dirs change (690 -> 691), so resolve rather than hardcode."""
     base = os.path.expanduser(PROFILES[browser])

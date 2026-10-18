@@ -95,20 +95,41 @@ def ws_send(s, obj):
     s.send(bytes(hdr))
 
 
-def ws_recv(s, pending=b""):
-    def need(n):
-        nonlocal pending
-        while len(pending) < n:
-            pending += s.recv(65536)
-        out, pending = pending[:n], pending[n:]
-        return out
-    b0, b1 = need(2)
-    ln = b1 & 0x7F
-    if ln == 126:
-        ln = struct.unpack(">H", need(2))[0]
-    elif ln == 127:
-        ln = struct.unpack(">Q", need(8))[0]
-    return need(ln).decode(errors="replace")
+class WsClient:
+    def __init__(self, url):
+        self.s, self.pending = ws_connect(url)
+        self.seq = 0
+
+    def send(self, obj):
+        ws_send(self.s, obj)
+
+    def recv(self):
+        def need(n):
+            while len(self.pending) < n:
+                chunk = self.s.recv(65536)
+                if not chunk:
+                    raise ConnectionError("websocket closed")
+                self.pending += chunk
+            out, self.pending = self.pending[:n], self.pending[n:]
+            return out
+        b0, b1 = need(2)
+        ln = b1 & 0x7F
+        if ln == 126:
+            ln = struct.unpack(">H", need(2))[0]
+        elif ln == 127:
+            ln = struct.unpack(">Q", need(8))[0]
+        return need(ln).decode(errors="replace")
+
+    def cmd(self, method, params=None, wait=True):
+        self.seq += 1
+        msg_id = self.seq
+        self.send({"id": msg_id, "method": method, "params": params or {}})
+        if not wait:
+            return None
+        while True:
+            d = json.loads(self.recv())
+            if d.get("id") == msg_id:
+                return d.get("result", {})
 
 
 def main():
@@ -117,23 +138,12 @@ def main():
     pages = [t for t in tabs if t.get("type") == "page"]
     page = pages[0]
     ws_url = page["webSocketDebuggerUrl"]
-    s, rest = ws_connect(ws_url)
-    msg = [0]
+    ws = WsClient(ws_url)
 
-    def cmd(method, params=None, wait=True):
-        msg[0] += 1
-        ws_send(s, {"id": msg[0], "method": method, "params": params or {}})
-        if not wait:
-            return None
-        while True:
-            d = json.loads(ws_recv(s))
-            if d.get("id") == msg[0]:
-                return d.get("result", {})
-
-    cmd("Page.enable")
-    cmd("Emulation.setDeviceMetricsOverride", {
+    ws.cmd("Page.enable")
+    ws.cmd("Emulation.setDeviceMetricsOverride", {
         "width": W, "height": H, "deviceScaleFactor": 1, "mobile": False})
-    cmd("Page.navigate", {"url": URL})
+    ws.cmd("Page.navigate", {"url": URL})
     time.sleep(14)   # vite dev + React mount + r3f canvas
 
     js = """
@@ -156,7 +166,7 @@ def main():
     """ % ("", len(TARGETS), json.dumps([t[0] for t in TARGETS]),
            json.dumps([t[1] for t in TARGETS]))
 
-    res = cmd("Runtime.evaluate", {"expression": js, "returnByValue": True})
+    res = ws.cmd("Runtime.evaluate", {"expression": js, "returnByValue": True})
     rows = json.loads(res["result"]["value"])
     print("  viewport %dx%d\n" % (W, H))
     print("  %-18s %6s %6s %6s %6s   %s" % ("block", "x", "y", "w", "h", "notes"))

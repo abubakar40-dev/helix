@@ -34,12 +34,12 @@ EXPR = """(() => { const W=innerWidth,H=innerHeight;
    const r=e.getBoundingClientRect();
    return {x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)};};
  const ov=[];
- document.querySelectorAll('#top,main,#status,.panel,#orbwrap,#globe,#townCanvas,#composer,#headlines,#nodes')
+ document.querySelectorAll('#titlebar,main,#status,.panel,#orbwrap,#globe,#townCanvas,#composer,#headlines,#nodes')
   .forEach(el=>{const r=el.getBoundingClientRect();
    if(r.right>W+1||r.bottom>H+1)
      ov.push((el.id||el.className)+' r='+Math.round(r.right)+' b='+Math.round(r.bottom));});
  return {viewport:W+'x'+H,
-   spec:{titlebar:q('#top'),left:q('#left'),centre:q('#top'),town:q('#town'),
+   spec:{titlebar:q('#titlebar'),left:q('#left'),centre:q('#core'),town:q('#town'),
      right:q('#console'),cam:q('#camPanel'),globe:q('#globePanel'),hl:q('#hlPanel'),
      nodes:q('#nodes'),orb:q('#orbwrap'),composer:q('#composer'),
      consoleHead:q('#console .ph')},

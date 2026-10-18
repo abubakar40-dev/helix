@@ -15,7 +15,7 @@ from aiohttp import web, WSMsgType
 HERE = os.path.dirname(os.path.abspath(__file__))
 CALLS = os.path.join(HERE, "calls")
 TASKS = os.path.join(HERE, "tasks")
-WEB = os.path.join(HERE, "web")
+WEB = os.path.join(HERE, "helix-call-web") if os.path.isdir(os.path.join(HERE, "helix-call-web")) else os.path.join(HERE, "web")
 MEMORY = os.path.join(HERE, "memory.json")
 os.makedirs(CALLS, exist_ok=True)
 os.makedirs(TASKS, exist_ok=True)
